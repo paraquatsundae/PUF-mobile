@@ -1,6 +1,10 @@
 # Bundled farm data (ISOXML)
 
-Place `TASKDATA.XML` here for first-run seeding to app storage.
+**Do not commit real `TASKDATA.XML` or KML paddock files to git.**
 
-The phone app copies `assets/farm/TASKDATA.XML` into the writable app data
-directory when no farm data exists yet. Full paddock picker UI is Phase P3.
+For first-run seeding, a local-only copy may be placed here as
+`assets/farm/TASKDATA.XML` and listed in `qml.qrc`. The app copies it into
+`<AppData>/TASKDATA/TASKDATA.XML` when storage is empty (`seedBundledFarmIfEmpty`).
+
+Normal operator workflow: import unzipped ISOXML or KML from
+`/storage/emulated/0/Download/QtAgGPS/` via **Setup → Paddock Setup → Scan**.

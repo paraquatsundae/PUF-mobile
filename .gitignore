@@ -14,15 +14,21 @@ moc_*.cpp
 qrc_*.cpp
 object_script.*
 
-# Android build outputs (keep android/ source tree; android-build/ manifest+src only)
+# Android build outputs (keep android/ source tree; android-build manifest+src tracked)
 android-build/build/
 android-build/.gradle/
+android-build/assets/
 android-build/local.properties
 android-build/local.properties~
 android-build/gradle.properties~
 android-*-deployment-settings.json
 *.apk
 *.aab
+*.idsig
+
+# Native libs (built locally; never commit)
+*.so
+libpufmobile_*.so
 
 # Logs and deploy scratch
 *.log
@@ -30,11 +36,28 @@ deploy_*.log
 build_*.log
 apk*.log
 
-# Recordings and field data
+# Debug / workshop scratch (screenshots, adb dumps, scratch ISOXML)
+_debug_*
+_dbg_*
+
+# Recordings and field data — NEVER commit real farm/paddock data
 recordings/
+files/jobs/
+files/TASKDATA/
+**/TASKDATA.XML
+**/Taskdata.xml
+**/TaskData.xml
+**/taskdata.xml
+assets/farm/TASKDATA.XML
 *.csv
 *.kml
 *.iop
+*.geojson
+*.shp
+*.dbf
+*.shx
+*.prj
+*.zip
 
 # IDE / OS
 .DS_Store

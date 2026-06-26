@@ -1,94 +1,244 @@
 # PUF-mobile
 
-Lightweight, field-ready GPS / guidance display for Android tablets, built for the
-PUFworks spot-spraying program. Runs on old, low-power cab tablets (target: Android
-6.0.1 / API 23, 32-bit `armeabi-v7a`, OpenGL ES 2.0) using **Qt 5.15 LTS**.
+Field-ready GPS guidance for Android tablets and phones, built for the **PUFworks**
+spot-spraying program. Qt 5.15 LTS, heading-up map, coverage recording, farm/paddock
+setup, and John Deere StarFire / 616R position via a UDP NMEA bridge.
 
-It parses NMEA-0183 (`GGA`/`RMC`/`VTG`/`HDT`) and the AgOpenGPS `$PANDA`/`$PAOGI`
-sentences and renders a heading-up map with the tractor/implement, coverage
-("recording the work"), field boundaries, run (AB) lines, and a configurable
-multi-page UI.
+Target hardware is a small **cab tablet fleet**:
 
----
-
-## Features
-
-- **Heading-up navigation map** — centred tractor (rear GPS antenna at map centre),
-  chase / top-down / whole-paddock perspectives, textured ground, sky + horizon,
-  on-map zoom/centre controls.
-- **Coverage mapping** — real, non-overlapping worked-area accumulation tied to the
-  implement width, with a flat per-frame render cost (frozen + active chunk split).
-- **Farm setup** — Client / Farm / Field hierarchy, local persistence (ISOXML
-  `TASKDATA.XML`), KML import (one paddock per polygon, auto-named), boundaries and
-  width-spaced run lines.
-- **Configurable layout** — selectable left/right info columns, per-page column
-  visibility, active-page cycle, persistent top banner + bottom soft keys.
-- **Multiple GPS sources** (see below).
-
----
-
-## GPS sources (`GpsSource` interface)
-
-| Backend | File | Platform | Use |
+| Device | Android | ABI | Role |
 |---|---|---|---|
-| Internal serial (POSIX/termios) | `posixserialgpssource.cpp` | Android/Linux | Tablet's built-in GNSS (e.g. BT-770 antenna feed) on `/dev/ttyS0` @ 115200 |
-| UDP listener | `udpgpssource.cpp` | All | **John Deere StarFire / 616R via the CAN bridge** (recommended), or any PC relay. Default port **9999** |
-| USB-CAN (slcan, JD) | `cangpssource.cpp` + `android/src/org/qtproject/example/JdUsbCan.java` | Android | On-tablet CANable → JD `$PANDA`. Works only if the tablet's USB-host can drive the adapter (see DEV_NOTES) |
-| Bluetooth GPS (SPP/RFCOMM) | `btgpssource.cpp` + `android/src/org/qtproject/example/BtGps.java` | Android | NMEA from a paired CAN→BT host (laptop/Pi running `bt_gps_host.py`) or any off-the-shelf Bluetooth GPS |
-| QtSerialPort | `serialgpssource.cpp` | Desktop only | PC COM-port testing |
+| Allwinner T3 workshop tablet | 6.0.1 (API 23) | `armeabi-v7a` | Legacy cab unit, GL ES 2.0 |
+| Samsung SM-T545 | 11 (API 30) | `arm64-v8a` | Primary test / deploy tablet |
 
-### Recommended JD path: the CAN → UDP bridge
+Both builds ship in one dual-ABI APK (`minSdk 23`, `targetSdk 29`). App id:
+`com.pufworks.pufmobile`.
 
-The most reliable way to get John Deere GPS/TCM into the app is the companion
-bridge, which reuses the field-validated PUFworks decoder
-(`PUFworks-isobus/scripts/gps_bridge.py`):
+---
+
+## What PUF-mobile is
+
+PUF-mobile is the **cab-side guidance display** in the PUFworks stack. It:
+
+- Parses NMEA-0183 (`GGA`/`RMC`/`VTG`/`HDT`) and AgOpenGPS `$PANDA`/`$PAOGI`
+- Renders a **heading-up map** with tractor/implement, field boundaries, AB run lines,
+  and worked-area coverage
+- Persists **Client → Farm → Field** hierarchy locally (ISOXML `TASKDATA.XML`)
+- Records coverage as GeoJSON per job under app-private storage
+- Supports multiple GPS backends (internal serial, UDP, Bluetooth, tablet GNSS, USB-CAN)
+
+It does **not** run vision inference or ISOBUS section actuation — those live in
+`PUFworks-vision` and `PUFworks-isobus`. The tablet consumes position from the CAN
+bridge and shows guidance; sprayer control stays on the bus engine path.
+
+---
+
+## Who PUFworks is
+
+**PUFworks** is a workshop/field precision-ag program centred on Clare Downs equipment
+and split across dedicated repos:
+
+| Repo | Role |
+|---|---|
+| `PUFworks-vision` | Camera → Green-on-Brown → `SectionBitmapV1` |
+| `PUFworks-isobus` | CAN/ISOBUS bus engine, GreenSeeker, safety ladder |
+| `PUFworks-contracts` | IPC schemas (`SectionBitmapV1`, telemetry, etc.) |
+| `PUFworks-shell` | Cab integrator (vision + isobus sidecars) |
+| `PUF-mobile` | Android tablet/phone GPS guidance (this repo) |
+| `AgValoniaGPS` | Desktop Gen4 shell + GPS bridge integration |
+
+Live sprayer work is **Green-on-Brown only**; agronomy/GoG labelling is offline.
+616R = GreenSeeker serial + whole-boom blanking (no CAN section injection).
+Goldacres GRC = DDI 141 sections. Boot ISOBUS in `OBSERVE`; never bypass the
+Control Authority ladder.
+
+This repo is Windows-first, local workshop builds — no auto-updater, no public
+distribution pipeline.
+
+---
+
+## How to use it
+
+### Install
+
+1. Build or obtain the debug APK (see **Build** below), or install from a GitHub
+   Release if one is published.
+2. Close any running copy of the app on the tablet, then install/replace the APK.
+3. Open **Setup** and confirm the **Build** stamp (top-right) matches the build you
+   deployed — e.g. `26Jun-tablet-setup-polish` on tablet layout, or the phone build
+   id on phone layout. Mismatch means an old APK is still installed.
+
+### GPS source
+
+**Setup → GPS / Source** (tablet) or **GPS** tab (phone):
+
+| Source | When to use |
+|---|---|
+| **UDP port 9999** | **Recommended for John Deere.** Run `bridge_to_tablet.ps1` on a
+  laptop/Pi with the CANable; tablet listens on UDP 9999. |
+| **Internal serial** | Tablet built-in GNSS on `/dev/ttyS0` @ 115200 (e.g. BT-770 antenna). |
+| **Bluetooth GPS** | CAN→BT host (`bt_bridge.ps1` / `bt_gps_host.py`) or any SPP GPS. |
+| **Tablet GPS** | Android location services (no TCM attitude). |
+| **USB-CAN** | On-tablet CANable — blocked on some tablets by OTG power limits; prefer UDP. |
+
+John Deere path (recommended):
 
 ```
-CANable (slcan) → laptop/Pi running gps_bridge.py → UDP (NMEA) → tablet :9999
+CANable (slcan) → gps_bridge.py on laptop/Pi → UDP NMEA → tablet :9999
 ```
-
-Run on a machine with the CANable plugged in, on the same Wi-Fi as the tablet:
 
 ```powershell
+cd C:\Projects\PUF-mobile
 .\bridge_to_tablet.ps1 -TabletIp 192.168.1.50 -Com COM2
 ```
 
-Then on the tablet: **Setup → GPS → UDP port `9999` → Listen UDP**. (Defaults:
-CAN 250 kbps, USB-serial 2,000,000 baud; pass `-CanBitrate 500000` if "no data".)
+On tablet: **Setup → GPS → UDP port `9999` → Listen UDP**.
 
-### Alternative JD path: the CAN → Bluetooth bridge
+After changing bridge or implement settings, use **Setup → Save Settings** (top-right)
+so width, offset, antenna height, and source params restore on next launch.
 
-When no shared Wi-Fi is available — or for a future stand-alone appliance (Pi /
-Arduino) — the same decoder can serve NMEA over a direct Bluetooth serial link:
+### Implement width and coverage
+
+1. **Setup → Implement** — set **implement width** (m), **offset** (m behind GPS antenna),
+   and section count if using section control.
+2. **Setup → GPS Information** — set **antenna height** (m) for TCM terrain compensation
+   when using `$PANDA` from the JD bridge.
+3. On the map page, turn **Record coverage** on. Worked area accumulates as non-overlapping
+   swaths tied to implement width.
+4. **Work** page — create/resume jobs, flat or Rx rate, **Save job** / **Complete job**.
+   Jobs persist under app-private `files/jobs/` (see **On-tablet storage** below).
+
+### Setup hub
+
+**Setup** tiles:
+
+| Tile | Purpose |
+|---|---|
+| Paddock Setup | Client / farm / field hierarchy, boundaries, AB lines, import |
+| Implement | Width, sections, offset |
+| Layout | Pages, info columns, element visibility |
+| GPS / Source | Connection and NMEA source selection |
+| GPS Information | Fix, sats, HDOP, TCM roll/pitch, antenna height |
+| Products & Mixes | Tank mixes, products, crops catalog |
+
+Use **Save Settings** on the Setup hub after changing machine or GPS params.
+
+---
+
+## ISOXML / farm data import
+
+**Do not commit farm or field data to this git repo.** Real paddock boundaries, client
+names, and coordinates belong on the tablet or in Ops Center exports — not in source
+control. See `.gitignore`.
+
+### What the app reads
+
+The app reads **unzipped ISOXML** — plain `TASKDATA.XML` and sibling files — **not**
+a `.zip` archive directly. If John Deere / Ops Center gives you a zip, **extract it
+first** on the tablet (or on a PC, then copy the folder).
+
+`FarmStore::importIsoxml()` accepts either:
+
+- A path to `TASKDATA.XML` itself, or
+- A **folder** that contains `TASKDATA.XML` (or `TASKDATA/TASKDATA.XML`, or any
+  immediate subfolder that nests the XML — typical JD export layout).
+
+KML import (`.kml` file) creates **one paddock per polygon** into the **currently
+selected farm**, named from the KML placemark. Select a farm before importing KML.
+
+### Typical unzipped ISOXML layout
+
+John Deere / AgGateway exports often look like:
 
 ```
-CANable (slcan) → laptop/Pi running bt_gps_host.py → Bluetooth (SPP) → tablet
+MyExport/                    ← copy this whole folder to the tablet
+  TASKDATA.XML               ← root-level (app finds this)
+  …                          ← optional BIN/IMG/TIM sidecar files
 ```
 
-Pair the host and tablet in Android Bluetooth settings first, then on a **Windows**
-laptop (note the *Incoming* Bluetooth COM port under "More Bluetooth options"):
+Or nested:
 
-```powershell
-.\bt_bridge.ps1 -Com COM3 -BtSerial COM5         # live CAN
-.\bt_bridge.ps1 -BtSerial COM5 -Demo             # synthetic motion (no CANable)
+```
+MyExport/
+  TASKDATA/
+    TASKDATA.XML
+    …
 ```
 
-On a **Raspberry Pi** (BlueZ RFCOMM server, channel 1):
+The app scans the import folder for `*.kml`, `*.xml`, and **subfolders** that contain
+a `TASKDATA.XML`.
 
-```bash
-sudo python3 bt_gps_host.py --interface /dev/ttyACM0 --bitrate 250000 --channel 1
+### Where to put files on the tablet
+
+**Import scan folder** (Setup → Paddock Setup → **Scan**):
+
+```
+/storage/emulated/0/Download/QtAgGPS/
 ```
 
-Then on the tablet: **Setup → GPS → Bluetooth GPS → pick the host → Connect BT**.
-(Needs `pip install python-can pyserial` on the host.) Also works with any SPP
-Bluetooth GPS receiver.
+Copy `.kml` files or unzipped ISOXML **folders** here. Tap **Scan**, then **Import**
+on the row you want.
+
+**Persistent app storage** (after import or manual edits — not for git):
+
+```
+/data/data/com.pufworks.pufmobile/files/TASKDATA/TASKDATA.XML
+```
+
+This is where `FarmStore` loads/saves the active farm hierarchy. You normally reach it
+via in-app import, not by hand; `adb run-as` is for debug builds only.
+
+**Coverage jobs** (recorded work — also never commit):
+
+```
+/data/data/com.pufworks.pufmobile/files/jobs/<fieldId>/<jobId>/
+  metadata.json
+  coverage.geojson
+```
+
+### Copying from Ops Center / John Deere
+
+1. Export Task Data / fields from **Operations Center** or Gen4 (ISOXML / TaskData zip).
+2. **Unzip** on a PC or on the tablet (Files app → long-press zip → Extract).
+3. Copy the extracted folder (or standalone `.kml`) to the tablet:
+   - **Samsung (Android 11):** USB → `Internal storage/Download/QtAgGPS/`, or Wi-Fi
+     FTP via `scripts/upload_tablet_ftp.ps1`.
+   - **Allwinner (Android 6):** same `Download/QtAgGPS/` path; legacy external storage
+     is enabled (`requestLegacyExternalStorage`) so the app can read non-media files
+     in Download without a document picker.
+4. In PUF-mobile: **Setup → Paddock Setup → Scan → Import** on the folder or KML row.
+5. For KML: select **Client** and **Farm** first, then import.
+
+The app uses `READ_EXTERNAL_STORAGE` for Download access on API 23–29. Grant storage
+permission when prompted on first import.
+
+### First run / empty install
+
+With no farm data yet, create clients/farms/fields in **Paddock Setup**, or import
+ISOXML/KML as above. A bundled seed copy is **not** shipped in this repo — operators
+import their own TaskData export.
+
+---
+
+## GPS sources (reference)
+
+| Backend | File | Platform | Use |
+|---|---|---|---|
+| Internal serial | `posixserialgpssource.cpp` | Android/Linux | Tablet GNSS on `/dev/ttyS0` @ 115200 |
+| UDP listener | `udpgpssource.cpp` | All | **JD StarFire / 616R via CAN bridge**, port **9999** |
+| USB-CAN (slcan) | `cangpssource.cpp` + `JdUsbCan.java` | Android | On-tablet CANable (power-limited on some tablets) |
+| Bluetooth SPP | `btgpssource.cpp` + `BtGps.java` | Android | CAN→BT host or off-the-shelf BT GPS |
+| Tablet GNSS | `tabletgpssource.cpp` + `TabletGps.java` | Android | Android `LocationManager` |
+| QtSerialPort | `serialgpssource.cpp` | Desktop | PC COM-port testing |
+
+Bridge scripts live beside this repo and call `PUFworks-isobus/scripts/gps_bridge.py`.
 
 ---
 
 ## Build (desktop tooling on Windows)
 
-Prereqs: JDK 11, Android SDK (platform-tools, `platforms;android-23`,
-`build-tools;34.0.0`), NDK `21.4.7075529`, Qt `5.15.2` (android).
+Prereqs: JDK 11, Android SDK (`platforms;android-23`, `build-tools;34.0.0`),
+NDK `21.4.7075529`, Qt `5.15.2` (android).
 
 ```powershell
 $env:JAVA_HOME='C:\Program Files\Microsoft\jdk-11.0.31.11-hotspot'
@@ -98,27 +248,35 @@ $env:ANDROID_NDK_HOME=$env:ANDROID_NDK_ROOT
 $ndkMake='C:\Android\Sdk\ndk\21.4.7075529\prebuilt\windows-x86_64\bin\make.exe'
 
 cd C:\Projects\PUF-mobile
-C:\Qt\5.15.2\android\bin\qmake.exe pufmobile.pro -spec android-clang CONFIG+=qtquickcompiler ANDROID_ABIS=armeabi-v7a
+C:\Qt\5.15.2\android\bin\qmake.exe pufmobile.pro -spec android-clang CONFIG+=qtquickcompiler
 & $ndkMake -j4
 & $ndkMake apk
 ```
 
-Output APK: `android-build\build\outputs\apk\debug\android-build-debug.apk`
-(minSdk 23, `armeabi-v7a`, v1+v2 signed). It is staged at the project root as
-`PUF-Mobile_v1.0.0.apk`.
+Output: `android-build/build/outputs/apk/debug/android-build-debug.apk` (dual ABI,
+v1+v2 signed). Staged copy may appear as `PUF-Mobile_v1.0.0.apk` at project root.
 
-Close the running app on the tablet before reinstalling. The app installs as
-`com.pufworks.pufmobile` (distinct from the old `gps-display` build).
+Close the running app on the tablet before reinstalling. After adding/removing QML in
+`qml.qrc`, re-run `qmake` before `make`.
 
 ---
 
 ## Project layout
 
-- `*.cpp` / `*.h` — C++ model, controllers, GPS sources, coverage, farm/ISOXML store.
-- `*.qml` / `*.js` — QML UI (pages, banners, map view, info columns).
-- `android/` — `AndroidManifest.xml`, `res/drawable/icon.png` (app icon), and the
-  `JdUsbCan.java` (USB-host) + `BtGps.java` (Bluetooth SPP) helpers.
-- `bridge_to_tablet.ps1` — launcher for the CAN→UDP (Wi-Fi) bridge.
-- `bt_gps_host.py` / `bt_bridge.ps1` — CAN→Bluetooth (SPP) host bridge (Windows + Pi).
-- `scripts/` — dev helpers (e.g. `probe_tablet_gnss.ps1`).
-- `DEV_NOTES.md` — architecture, decisions, and hardware findings.
+| Path | Contents |
+|---|---|
+| `*.cpp` / `*.h` | Model, GPS sources, coverage, `FarmStore`, `JobStore`, Rx map |
+| `*.qml` / `*.js` | UI — map, Setup hub, phone shell, job popups |
+| `android/` | Manifest, icon, `JdUsbCan.java`, `BtGps.java`, `TabletGps.java` |
+| `bridge_to_tablet.ps1` | CAN→UDP bridge launcher |
+| `bt_gps_host.py` / `bt_bridge.ps1` | CAN→Bluetooth host bridge |
+| `scripts/` | Deploy, FTP upload, tablet job-data clear, GNSS probe |
+| `DEV_NOTES.md` | Architecture, hardware findings, persistence detail |
+
+---
+
+## Related docs
+
+- PUFworks workspace overview: `C:\Projects\AGENTS.md`
+- ISOBUS / JD decisions: `PUFworks-isobus/JD_ISOBUS_MAP.md`
+- Mobile dev notes: `DEV_NOTES.md`

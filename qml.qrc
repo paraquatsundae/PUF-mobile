@@ -52,6 +52,5 @@
         <file>PhoneGpsBanner.qml</file>
         <file>CoverageRecorder.qml</file>
         <file>assets/farm/README.md</file>
-        <file>assets/farm/TASKDATA.XML</file>
     </qresource>
 </RCC>
