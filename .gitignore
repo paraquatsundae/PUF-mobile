@@ -1,0 +1,42 @@
+# Qt / qmake build artifacts
+.qmake.stash
+Makefile
+Makefile.*
+arm64-v8a/
+armeabi-v7a/
+x86/
+x86_64/
+*.o
+*.obj
+moc_*.cpp
+*_qml.cpp
+*_js.cpp
+qrc_*.cpp
+object_script.*
+
+# Android build outputs (keep android/ source tree; android-build/ manifest+src only)
+android-build/build/
+android-build/.gradle/
+android-build/local.properties
+android-build/local.properties~
+android-build/gradle.properties~
+android-*-deployment-settings.json
+*.apk
+*.aab
+
+# Logs and deploy scratch
+*.log
+deploy_*.log
+build_*.log
+apk*.log
+
+# Recordings and field data
+recordings/
+*.csv
+*.kml
+*.iop
+
+# IDE / OS
+.DS_Store
+*.swp
+*~

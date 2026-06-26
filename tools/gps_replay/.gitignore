@@ -1,0 +1,9 @@
+# Build artifacts from qmake/make/MSVC.
+Makefile*
+*.o
+*.obj
+gps_replay
+gps_replay.exe
+.qmake.stash
+debug/
+release/
