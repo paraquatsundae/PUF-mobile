@@ -11,6 +11,23 @@ Started as an Android "spike" off `QtAgOpenGPS` to prove a Qt GPS app on an old
 Allwinner T3 tablet (Android 6.0.1 / API 23). Extracted and rebuilt into this
 standalone project (`PUF-mobile`) under `C:\Projects\PUF-mobile`.
 
+## JD GPS / coverage (2026-07-19)
+
+Symptoms with IsobusWifiHub / gps_bridge NMEA: jittery implement, paddock “wrong place”.
+
+**Not a lat/lon swap.** FEF3 is SAE J1939 Vehicle Position: **uint32** × 1e-7° with
+−210° offset on **both** lat and lon. Reading lon as signed int32 makes WA (~121°E)
+show as ~−98° (the “−90” bug). Hub `gps_bridge_lib.decode_fef3` and on-tablet
+`JdCanDecoder` must both use uint32 − 210. Confirm Setup → GPS shows south lat and
+east lon (~120°) for Clare Downs.
+
+Fixes in `19Jul-jd-gps`:
+1. `$PANDA` TCM heading sets `m_haveTrueHeading` (was track-derived COG only).
+2. ENU filter runs once per NMEA burst (not once per GGA/RMC/VTG/PANDA).
+3. Refuse seeding origin from (0,0); re-pin to paddock if GPS is >5 km from ring.
+4. Tractor rotation Behavior removed (200 ms lerp looked like boom sway).
+5. On-tablet Can path: FEE6 roll parked; FFFF byte7 → GGA quality (RTK tier).
+
 ## Stack & target
 
 - **Qt 5.15.2** (not 6.x). Qt 6.8's `androiddeployqt` enforces `minSdk >= 28`, which
@@ -22,7 +39,7 @@ standalone project (`PUF-mobile`) under `C:\Projects\PUF-mobile`.
 - App id: `com.pufworks.pufmobile`. Native libs: `libpufmobile_<abi>.so`.
 - **targetSdk 29 + `android:requestLegacyExternalStorage="true"`** (manifest). Android
   10/11 scoped storage otherwise blocks reading non-media files (e.g. `TASKDATA.XML`
-  in `Download/QtAgGPS`) even with `READ_EXTERNAL_STORAGE` granted — `MediaProvider`
+  in `Download/Farm_data`) even with `READ_EXTERNAL_STORAGE` granted — `MediaProvider`
   denies the read because that perm only grants MediaStore access. Legacy storage is
   only honored when targetSdk ≤ 29, so targetSdk is pinned at 29 (minSdk stays 23). Do
   not raise it; the alternative would be a SAF document-tree picker or
@@ -93,32 +110,29 @@ sats are blank — stale, harmless; update opportunistically.)
 
 ## TCM terrain compensation (roll/pitch) + antenna height
 
-The decoder already extracts pitch (`0xFEE8`), roll (`0xFEE6`) and a derived yaw
-rate. The bridge now forwards them to the tablet in a `$PANDA` sentence (the plain
-GGA/RMC/VTG cannot carry attitude), and `GpsModel` parses roll/pitch/yaw (PANDA
-fields 13/14/15) into `rollDeg` / `pitchDeg` / `yawRateDegS` / `hasAttitude`.
+**Status (2026-07-19): PARKED for coverage.** TCM **yaw/heading** from FEE8 via
+`$PANDA` is live and should be near pass-through in `gpsfilter` (no boom-width EMA).
 
-"Using" the TCM = projecting the high GPS antenna down to the true ground point
-under the machine before recording coverage. Applied **on the tablet** (live-tunable)
-in `FieldView._recordPoint()`:
+| Signal | Source | Coverage use |
+| :--- | :--- | :--- |
+| Heading | FEE8 → PANDA field 12 | Live (true heading) |
+| Roll | FEE6 | **Parked** — field RTK showed constant bogus vs cab TCM |
+| Pitch | FEE8 | **Parked for TCM** — ~−9° constant bias on flat → ~0.5 m along-track shift at 3 m height |
+
+Crossed wire that caused weird coverage: `hasAttitude` became true from pitch (and
+from roll `0.00`), so `RecordPoint.recordLocal` applied **pitch-only** compensation
+while roll stayed 0. Flag `TERRAIN_COMP_LIVE` in `RecordPoint.js` gates re-enable.
+
+Intended formula (when re-enabled after field check of both axes):
 
 ```
-lateral  ≈ antennaHeight · sin(roll)    (antenna is right of ground on right roll)
-longitudinal ≈ antennaHeight · sin(pitch) (antenna is ahead of ground on nose-up)
+lateral  ≈ antennaHeight · sin(roll)
+longitudinal ≈ antennaHeight · sin(pitch)
 ground = antenna − lateral·right(heading) − longitudinal·forward(heading)
 record = ground − implementOffset·forward(heading)
 ```
 
-Roll/pitch are clamped to ±30° so a bad TCM decode cannot fling the point;
-correction is skipped entirely when no `$PANDA` attitude has been seen, so GGA-only
-sources are unaffected. **Antenna height** is `AppController.antennaHeight`
-(default **3.0 m**, range 0–10 m), set on the GPS Information page. Together with
-`implementWidth`/`implementOffset` it is now persisted via **Save Settings**
-(see "Settings & job persistence").
-
-> **PC bridge:** the `$PANDA` attitude + the real satellite count (and still-empty
-> HDOP) only take effect once the operator **re-runs `bridge_to_tablet.ps1`** (it
-> calls the updated `PUFworks-isobus/scripts/gps_bridge_lib.py`).
+**Antenna height** remains on the GPS Information page (display / future TCM).
 
 ## GPS Information page
 
@@ -128,6 +142,35 @@ sources are unaffected. **Antenna height** is `AppController.antennaHeight`
 sentence count — see "Position card" below), speed, heading, altitude, TCM
 roll/pitch/yaw, and the antenna-height adjuster. All values bind live to the
 `gps` / `app` context objects; unavailable values render `—`.
+
+## No coverage recording — `recordOffsetM()` TypeError
+
+**Symptom (SM-T545):** Record on, GPS live, area stays 0 / no green swath.
+**Logcat:** `qrc:/RecordPoint.js:29: TypeError: Property 'recordOffsetM' of object
+AppController is not a function` on every fix.
+
+**Cause:** `RecordPoint.js` called `app.recordOffsetM()`; in QML that Q_PROPERTY is
+a property, not a callable. The throw aborted `_recordPoint()` so coverage never
+marked. **Fix:** use `app.recordOffsetM` (no parentheses). Build stamp
+`17Jul-record-fix`.
+
+## Record Coverage freeze (~3 min) — frozen Shape PathPolyline on Samsung tablets
+
+**Repro:** Record Coverage on, drive for ~2–4 minutes on the Samsung cab tablets
+(older unit failed first; both eventually freeze then the process is killed).
+
+**Root cause:** live coverage already painted as rotated rects, but **frozen** chunks
+were still `Shape { PathPolyline }` with boom-width `strokeWidth`. Each freeze added
+another triangulated Shape; viewport model rebuilds recreated them. Tessellation cost
+grew with worked distance until the UI wedged (Adreno on SM-T545 / similar).
+
+**Fix (`FieldView.qml`):** frozen coverage uses the same `_appendWorldStrokeSegs`
+rect painter as the active stroke (`_frozenPaintSegs`, capped, fed from `_visChunks`).
+No coverage PathPolyline on the tablet map. Phone path: coalesce `coverage.onChanged`
+paint rebuilds to 250 ms so cell-span scans are not per-mark.
+
+**Verify on-device:** dual-ABI APK on both Samsungs — Record Coverage for ≥15 min with
+GPS moving; UI should stay responsive and coverage should still paint behind the boom.
 
 ## Coverage crash fix — overlap + section control (empty PathPolyline)
 
@@ -449,7 +492,9 @@ Connection page (no adb needed). Findings on the Samsung test tablet with a
 **Conclusion:** the software path is correct; the wall is electrical/power. Options:
 a powered OTG hub / Y-cable (may fix the brownout), or — recommended — a **host
 bridge** that keeps the CANable on mains-powered hardware and sends only NMEA to the
-tablet: `bridge_to_tablet.ps1` (Wi-Fi/UDP) or `bt_bridge.ps1` (Bluetooth, below).
+tablet: standalone `dist\gps_bridge.exe` / `dist\run_gps_bridge.bat` (Wi-Fi/UDP;
+prefer this — no Python), or `bridge_to_tablet.ps1` / `bt_bridge.ps1` (Bluetooth, below).
+Rebuild exe: `PUFworks-isobus\scripts\build_gps_bridge_exe.ps1`.
 
 ## Bluetooth (SPP/RFCOMM) GPS path
 

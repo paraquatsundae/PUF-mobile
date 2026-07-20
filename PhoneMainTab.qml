@@ -172,6 +172,7 @@ Item {
         Rectangle {
             Layout.fillWidth: true
             Layout.margins: 12
+            Layout.bottomMargin: 12
             implicitHeight: 56
             radius: 8
             color: theme.panel
@@ -210,41 +211,6 @@ Item {
                         MouseArea { anchors.fill: parent; onClicked: app.setSectionControl(false) }
                     }
                 }
-            }
-        }
-
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.leftMargin: 12
-            Layout.rightMargin: 12
-            Layout.bottomMargin: 12
-            implicitHeight: 72
-            radius: 10
-            color: app.recordingCoverage ? "#c0392b" : theme.accent
-            RowLayout {
-                anchors.centerIn: parent
-                spacing: 12
-                Rectangle {
-                    visible: app.recordingCoverage
-                    width: 14; height: 14; radius: 7
-                    color: "#ffffff"
-                    SequentialAnimation on opacity {
-                        running: app.recordingCoverage
-                        loops: Animation.Infinite
-                        NumberAnimation { from: 1; to: 0.2; duration: 600 }
-                        NumberAnimation { from: 0.2; to: 1; duration: 600 }
-                    }
-                }
-                Text {
-                    text: app.recordingCoverage ? qsTr("■  STOP") : qsTr("●  RECORD")
-                    color: theme.accentText
-                    font.pixelSize: 24
-                    font.bold: true
-                }
-            }
-            MouseArea {
-                anchors.fill: parent
-                onClicked: app.toggleRecording()
             }
         }
     }

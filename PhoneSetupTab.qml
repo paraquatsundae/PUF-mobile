@@ -7,6 +7,8 @@ Item {
     signal openWidth()
     signal openPaddock()
     signal openGps()
+    signal openBoundary()
+    signal openGuide()
 
     ColumnLayout {
         anchors.fill: parent
@@ -31,12 +33,18 @@ Item {
             RowLayout {
                 anchors.fill: parent
                 anchors.margins: 12
-                Text { text: qsTr("Width"); color: theme.text; font.pixelSize: 16 }
+                Text { text: qsTr("Implement"); color: theme.text; font.pixelSize: 16 }
                 Item { Layout.fillWidth: true }
                 Text {
-                    text: app.implementWidth.toFixed(1) + " m"
+                    text: {
+                        var att = app.recordAttachment === 0 ? qsTr("ute")
+                              : (app.recordAttachment === 2 ? qsTr("drawbar") : qsTr("3PL"))
+                        return app.implementWidth.toFixed(1) + " m · " + att
+                    }
                     color: theme.accent
-                    font.pixelSize: 16
+                    font.pixelSize: 14
+                    elide: Text.ElideRight
+                    Layout.maximumWidth: parent.width * 0.5
                 }
                 Text { text: ">"; color: theme.textDim; font.pixelSize: 18 }
             }
@@ -58,6 +66,7 @@ Item {
                     text: {
                         if (!app.running) return qsTr("(not connected)")
                         if (app.lastSource === "tablet") return qsTr("Phone GNSS")
+                        if (app.lastSource === "udp") return qsTr("ISOBUS WiFi")
                         return app.activeSource.length ? app.activeSource : qsTr("Phone GNSS")
                     }
                     color: theme.accent
@@ -89,6 +98,52 @@ Item {
                 Text { text: ">"; color: theme.textDim; font.pixelSize: 18 }
             }
             MouseArea { anchors.fill: parent; onClicked: setupTab.openPaddock() }
+        }
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.leftMargin: 12
+            Layout.rightMargin: 12
+            implicitHeight: 56
+            radius: 8
+            color: theme.panel
+            RowLayout {
+                anchors.fill: parent
+                anchors.margins: 12
+                Text { text: qsTr("Record boundary"); color: theme.text; font.pixelSize: 16 }
+                Item { Layout.fillWidth: true }
+                Text {
+                    text: farm.hasActiveField
+                          ? (farm.boundaryCount >= 3
+                             ? (farm.boundaryCount + " pts")
+                             : qsTr("none"))
+                          : qsTr("(no paddock)")
+                    color: theme.accent
+                    font.pixelSize: 16
+                }
+                Text { text: ">"; color: theme.textDim; font.pixelSize: 18 }
+            }
+            MouseArea {
+                anchors.fill: parent
+                enabled: farm.hasActiveField
+                onClicked: setupTab.openBoundary()
+            }
+        }
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.leftMargin: 12
+            Layout.rightMargin: 12
+            implicitHeight: 56
+            radius: 8
+            color: theme.panel
+            RowLayout {
+                anchors.fill: parent
+                anchors.margins: 12
+                Text { text: qsTr("How to use"); color: theme.text; font.pixelSize: 16 }
+                Item { Layout.fillWidth: true }
+                Text { text: qsTr("Guide"); color: theme.accent; font.pixelSize: 16 }
+                Text { text: ">"; color: theme.textDim; font.pixelSize: 18 }
+            }
+            MouseArea { anchors.fill: parent; onClicked: setupTab.openGuide() }
         }
         Rectangle {
             Layout.fillWidth: true

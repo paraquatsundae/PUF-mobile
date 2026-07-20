@@ -20,8 +20,8 @@ ApplicationWindow {
     // Meaningful soft-key band only (ignore spurious 1–7 px OEM noise).
     readonly property int tabletNavInset: platform.navigationBarInset >= 8 ? platform.navigationBarInset : 0
     // Bumped each deploy — visible on SETUP to confirm which build is on-device.
-    readonly property string tabletBuildId: "26Jun-tablet-setup-polish"
-    readonly property string phoneBuildId: "26Jun16:30-swath-paint"
+    readonly property string tabletBuildId: "19Jul-jd-gps"
+    readonly property string phoneBuildId: "19Jul-jd-gps"
 
     // Dark palette so every Controls text input (TextField/ComboBox) reads light
     // text on a dark base instead of the Default style's black-on-white (which made
@@ -74,7 +74,8 @@ ApplicationWindow {
         "gpsinfo":{ title: qsTr("GPS Information"), glyph: Icons.satellite, kind: "setup", stack: 8, back: "setup" },
         "paddock":{ title: qsTr("Paddock Setup"), glyph: Icons.farm,  kind: "setup", stack: 9, back: "setup" },
         "ablines":{ title: qsTr("Run Lines"), glyph: Icons.track,     kind: "setup", stack: 10, back: "paddock" },
-        "catalog":{ title: qsTr("Products & Mixes"), glyph: Icons.work, kind: "setup", stack: 11, back: "setup" }
+        "catalog":{ title: qsTr("Products & Mixes"), glyph: Icons.work, kind: "setup", stack: 11, back: "setup" },
+        "bndrec": { title: qsTr("Record boundary"), glyph: Icons.farm, kind: "setup", stack: 12, back: "paddock" }
     })
 
     function go(id) { currentPageId = id; }
@@ -116,6 +117,21 @@ ApplicationWindow {
 
     RunLinePopup { id: runLinePopup }
 
+    BoundaryGpsBridge { }
+
+    UserGuidePopup { id: userGuide }
+
+    Timer {
+        id: bootGuide
+        interval: 1000
+        repeat: false
+        running: true
+        onTriggered: {
+            if (!theme.userGuideSeen)
+                userGuide.openGuide(true)
+        }
+    }
+
     // Day-start Resume popup: shown on launch and re-openable from the Work page.
     // Resuming/opening a job activates its field; jump to the map to see it.
     ResumeJobPopup { id: resumePopup; onOpened: shell.go("nav") }
@@ -141,6 +157,7 @@ ApplicationWindow {
         visible: shell.isPhone
         z: 10
         buildId: shell.phoneBuildId
+        openUserGuide: function(first) { userGuide.openGuide(first) }
     }
 
     RowLayout {
@@ -203,8 +220,8 @@ ApplicationWindow {
                 NavigationPage { }
                 DataPage { }
                 WorkSetupPage { onOpenJobsRequested: shell.openResume() }
-                SetupPage { buildId: shell.tabletBuildId; onNavigate: shell.go(id) }
-                FarmSetupPage { }
+                SetupPage { buildId: shell.tabletBuildId; onNavigate: shell.go(id); onOpenGuide: userGuide.openGuide(false) }
+                FarmSetupPage { onNavigateRequested: shell.go(id) }
                 ImplementPage { }
                 LayoutManagerPage {
                     runTitles: ({
@@ -218,6 +235,7 @@ ApplicationWindow {
                 PaddockSetupPage { onNavigate: shell.go(id) }
                 AbLinesPage { }
                 CatalogManagerPage { }
+                BoundaryRecordPage { onNavigateBack: shell.go("paddock") }
             }
         }
 

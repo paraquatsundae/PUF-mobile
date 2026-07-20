@@ -3,6 +3,7 @@
         <file>FormFactor.js</file>
         <file>main.qml</file>
         <file>Style.js</file>
+        <file>RecordPoint.js</file>
         <file>Elements.js</file>
         <file>Icons.js</file>
         <file>Sections.js</file>
@@ -50,7 +51,16 @@
         <file>PhoneWorkChoicePopup.qml</file>
         <file>PhoneJobListScreen.qml</file>
         <file>PhoneGpsBanner.qml</file>
+        <file>PhoneSubScreenHeader.qml</file>
+        <file>PhoneBoundaryScreen.qml</file>
+        <file>UserGuidePopup.qml</file>
+        <file>RecordAttachmentPanel.qml</file>
+        <file>FarmDataImportPopup.qml</file>
+        <file>BoundaryRecordScreen.qml</file>
+        <file>BoundaryRecordPage.qml</file>
+        <file>BoundaryGpsBridge.qml</file>
         <file>CoverageRecorder.qml</file>
         <file>assets/farm/README.md</file>
+        <file>assets/farm/TASKDATA.EMPTY.xml</file>
     </qresource>
 </RCC>

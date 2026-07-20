@@ -207,7 +207,7 @@ Item {
             trackName: app.trackName,
             areaHa: coverage.areaHa,
             implementWidthM: app.implementWidth,
-            implementOffsetM: app.implementOffset,
+            implementOffsetM: app.recordOffsetM,
             antennaHeightM: app.antennaHeight,
             originLat: gps.originLat(), originLon: gps.originLon(),
             source: app.activeSource

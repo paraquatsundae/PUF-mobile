@@ -183,11 +183,14 @@ bool JdCanDecoder::update(quint32 canId, const QByteArray &data)
     if (sa == kAtxSa && pgn == kPgnFEF3) {
         if (data.size() < 8)
             return false;
-        qint32 latRaw, lonRaw;
+        // SAE J1939 Vehicle Position: uint32 LE × 1e-7°, offset −210° on BOTH
+        // axes. Lon east of ~4.7° overflows int32 on the wire — reading signed
+        // yields ≈ −98° for WA (~121°E). Mirror gps_bridge_lib.decode_fef3.
+        quint32 latRaw = 0, lonRaw = 0;
         std::memcpy(&latRaw, data.constData() + 0, 4);
         std::memcpy(&lonRaw, data.constData() + 4, 4);
-        const double lat = latRaw * 1e-7 - 210.0; // JD ATX offset
-        const double lon = lonRaw * 1e-7;
+        const double lat = latRaw * 1e-7 - 210.0;
+        const double lon = lonRaw * 1e-7 - 210.0;
         if (lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0)
             return false;
         if (!m_havePrevHeading && m_havePrevLL) {
@@ -204,24 +207,28 @@ bool JdCanDecoder::update(quint32 canId, const QByteArray &data)
         return true;
     }
     if (sa == kAtxSa && pgn == kPgnFEE6) {
-        if (data.size() >= 4) {
-            const int raw = u16le(data, 2);
-            if (raw != 0xFFFF) { m_rollDeg = raw / 128.0; return true; }
-        }
+        // PARKED — matches gps_bridge_lib.decode_fee6_atx_roll: field RTK showed
+        // a constant bogus roll vs cab TCM. Do not apply until revalidated.
         return false;
     }
     if (sa == kAtxSa && pgn == kPgnFFFF) {
         // JD proprietary multiplex: byte0 selects the sub-message. Sub-msg 0x51
         // (signature 0x51 0x03 0x02) carries the GNSS solution summary; byte3 =
-        // total satellites used. Field-validated across 25+ 616R captures
-        // (~25-39 sats). Mirrors gps_bridge_lib.decode_gnss_sats_ffff(). Must be
-        // SA-gated to 0x1C (DISP 0xF0 also emits 0xFFFF with other content).
+        // total satellites used; byte7 = solution-status (mapped to GGA quality).
+        // Mirrors gps_bridge_lib.decode_gnss_sats_ffff / decode_gnss_quality_ffff.
         if (data.size() >= 4
             && static_cast<quint8>(data[0]) == 0x51
             && static_cast<quint8>(data[1]) == 0x03
             && static_cast<quint8>(data[2]) == 0x02) {
             const int s = static_cast<quint8>(data[3]);
-            if (s > 0 && s <= 64) { m_sats = s; m_haveSats = true; return true; }
+            if (s > 0 && s <= 64) { m_sats = s; m_haveSats = true; }
+            if (data.size() >= 8) {
+                // JD byte7: lower = better (0x01 steady RTK). Map like the bridge.
+                static const int kMap[5] = { 0, 4, 5, 2, 1 };
+                const int rawQ = static_cast<quint8>(data[7]);
+                m_fixQuality = (rawQ >= 0 && rawQ <= 4) ? kMap[rawQ] : 1;
+            }
+            return m_haveSats || data.size() >= 8;
         }
         return false;
     }
@@ -294,9 +301,10 @@ QString JdCanDecoder::panda() const
             .arg(m_altM, 0, 'f', 1)
             .arg(0.0, 0, 'f', 1)
             .arg(m_speedKmh, 0, 'f', 2);
-    body += QStringLiteral(",%1,%2,%3,%4")
+    // Roll empty while FEE6 is parked (do not send 0.00 — looks live).
+    // Pitch forwarded for diagnostics; tablet terrain-comp is parked.
+    body += QStringLiteral(",%1,,%2,%3")
             .arg(m_headingDeg, 0, 'f', 1)
-            .arg(m_rollDeg, 0, 'f', 2)
             .arg(m_pitchDeg, 0, 'f', 2)
             .arg(m_yawRate, 0, 'f', 2);
     return nmeaWrap(body);

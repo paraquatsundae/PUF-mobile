@@ -138,10 +138,17 @@ private:
     // with one full QML relayout + coverage pass per datagram.
     void noteFixChanged();
     void emitFixNow();
+    // Run the ENU filter once per NMEA burst (GGA+RMC+VTG+PANDA arrive together
+    // from the JD bridge). Filtering every sentence with ~0 dt causes boom jitter.
+    void scheduleFilterUpdate();
+    void runScheduledFilter();
     QTimer *m_emitTimer = nullptr;
+    QTimer *m_filterTimer = nullptr;
     QElapsedTimer m_emitClock;
     bool m_emitPending = false;
-    static constexpr int kMinEmitMs = 100;
+    bool m_filterPending = false;
+    // ~20 Hz UI/coverage updates. Lower felt like the machine was jolting.
+    static constexpr int kMinEmitMs = 50;
 
     double m_lat = 0.0;
     double m_lon = 0.0;
@@ -161,7 +168,8 @@ private:
     QString m_lastSentence;
     int m_count = 0;
     QDateTime m_lastFix;
-    bool m_haveTrueHeading = false; // set once a $..HDT sentence is seen
+    // Authoritative heading: $..HDT or JD TCM yaw on $PANDA (FEE8 via bridge).
+    bool m_haveTrueHeading = false;
 
     // Returns true if this call established the local-frame origin for the first
     // time, so the caller can deliver the hasOrigin true-transition immediately

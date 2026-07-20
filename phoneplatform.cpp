@@ -132,11 +132,17 @@ void PhonePlatform::setInsetsFromAndroid(int top, int bottom)
     // Never touch Activity/Window/View from qtMainLoopThread — that throws
     // CalledFromWrongThreadException under CheckJNI and aborts the process.
     // Inset fallback reads belong in readSystemBarInsets() on the Android thread.
-    // Samsung and other OEMs occasionally report stableInsetBottom far larger
-    // than the real nav/gesture band (hundreds of px), which leaves a tall void
-    // below the 56 px tab row. Cap absurd values; keep normal 3-button nav (~48–96).
-    static const int kMaxNavInset = 96;
+    // Samsung and other OEMs occasionally report stableInset* far larger than the
+    // real status/gesture bands (hundreds of px), which leaves tall voids in the
+    // phone shell. Cap absurd values; gesture nav is typically ~48 px.
+    static const int kMaxStatusInset = 40;
+    static const int kMaxNavInset = 56;
     static const int kAbsurdNavInset = 120;
+    if (top > kMaxStatusInset) {
+        qWarning() << "PhonePlatform: capping statusBarInset"
+                   << top << "->" << kMaxStatusInset;
+        top = kMaxStatusInset;
+    }
     if (bottom > kAbsurdNavInset) {
         qWarning() << "PhonePlatform: capping absurd navigationBarInset"
                    << bottom << "->" << kMaxNavInset;

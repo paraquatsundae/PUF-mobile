@@ -7,6 +7,7 @@ import "Icons.js" as Icons
 // Client -> Farm -> Field setup, active-field selection, and KML import.
 Flickable {
     id: page
+    signal navigateRequested(string id)
     contentWidth: width
     contentHeight: col.implicitHeight + 24
     clip: true
@@ -185,11 +186,32 @@ Flickable {
 
         Rectangle { Layout.fillWidth: true; height: 1; color: Style.panelEdge }
 
+        RowLayout {
+            Layout.fillWidth: true
+            Label {
+                text: qsTr("Boundary")
+                color: Style.textDim
+                font.pixelSize: 14
+                Layout.fillWidth: true
+            }
+            Button {
+                text: qsTr("Record boundary")
+                enabled: farm.hasActiveField
+                onClicked: page.navigateRequested("bndrec")
+            }
+        }
+
+        Rectangle { Layout.fillWidth: true; height: 1; color: Style.panelEdge }
+
         // ---------- Import KML / ISOXML ----------
         RowLayout {
             Layout.fillWidth: true
             Label { text: qsTr("Import field data"); color: Style.textDim
                     font.pixelSize: 14; Layout.fillWidth: true }
+            Button {
+                text: qsTr("Browse")
+                onClicked: farmImport.openBrowser()
+            }
             Button {
                 text: qsTr("Scan")
                 onClicked: {
@@ -199,13 +221,18 @@ Flickable {
             }
         }
         Label {
-            text: qsTr("Folder: ") + farm.defaultImportFolder()
+            text: qsTr("Browse copies or moves ISOXML/KML into Farm_data, then imports. Scan lists files already in Farm_data or Download.")
             color: Style.textDim; font.pixelSize: 11; wrapMode: Text.WordWrap; Layout.fillWidth: true
         }
         Label {
-            text: qsTr("KML \u2192 one paddock per polygon into the selected farm (named from the placemark).  "
-                       + "ISOXML (TASKDATA.XML or a task folder) \u2192 imports its own clients/farms/fields.")
+            text: qsTr("KML \u2192 paddocks into the selected farm.  "
+                       + "ISOXML (TASKDATA.XML or JD export folder) \u2192 imports its own clients/farms/fields.")
             color: Style.textDim; font.pixelSize: 11; wrapMode: Text.WordWrap; Layout.fillWidth: true
+        }
+        Label {
+            visible: page.importFiles.length === 0
+            text: qsTr("No import files found — copy TASKDATA.XML or a KML into the folders above, then Scan again.")
+            color: "#e0a030"; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true
         }
         Label {
             visible: farm.browseFarmId.length === 0
@@ -243,5 +270,11 @@ Flickable {
                 }
             }
         }
+    }
+
+    FarmDataImportPopup {
+        id: farmImport
+        phoneLayout: false
+        onImportFinished: page.importFiles = farm.listImportFiles("")
     }
 }

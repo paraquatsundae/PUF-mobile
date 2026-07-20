@@ -12,7 +12,7 @@ Item {
     antialiasing: true
     transformOrigin: Item.Top        // pivot about the antenna (front-centre)
     rotation: heading
-    Behavior on rotation { RotationAnimation { duration: 200; direction: RotationAnimation.Shortest } }
+    // No Behavior — a 200 ms rotation lerp lagged JD RTK/TCM and looked like boom jitter.
 
     // Native sprite is 623 x 1014 (w x h); preserve that aspect off the width so
     // the machine stays dimensionally honest as the map scales.

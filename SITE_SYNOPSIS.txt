@@ -1,0 +1,25 @@
+MODULE: PUF-mobile
+ROLE: Android cab GPS guidance & field setup
+STATUS: active (field tablet app)
+
+ONE-LINER
+Qt/Android heading-up guidance app for cab tablets — boundaries, AB lines, coverage recording, and John Deere position via UDP NMEA bridge.
+
+SYNOPSIS
+- Cab-side map UI: parses NMEA ($GGA/$RMC/$VTG/$HDT) and AgOpenGPS-style $PANDA/$PAOGI; heading-up tractor/implement, worked-area swaths, job recording as GeoJSON.
+- Client → Farm → Field hierarchy persisted locally (ISOXML TASKDATA.XML); import unzipped Ops Center exports or KML from tablet Download/Farm_data/.
+- GPS backends: UDP :9999 (recommended for JD StarFire/616R via laptop gps_bridge.exe), internal serial, Bluetooth, tablet GNSS, on-tablet USB-CAN (power-limited).
+- Implement setup: width, offset, section count/numbering (JD L/C/R labels) — layout convention mirrored read-only by PUFworks-vision for boom mapping.
+- Does NOT run vision inference or ISOBUS section actuation; sprayer control stays on PUFworks-isobus (+ optional PUFworks-vision bitmap feed).
+- Workshop builds: dual-ABI APK (armeabi-v7a + arm64), Qt 5.15, minSdk 23; Windows-first local builds, no auto-updater.
+
+SOURCES
+- README.md
+- DEV_NOTES.md (referenced in README)
+- AGENTS.md (via README "Who PUFworks is" table)
+
+NOTES FOR EDITOR
+- Found at C:\Projects\PUF-mobile (not PUFF-mobile).
+- Target hardware called out: Allwinner T3 (API 23) and Samsung SM-T545 — may be too granular for public site unless audience is internal.
+- gps_bridge.exe build script lives in PUFworks-isobus; cross-link on website if describing JD GPS path end-to-end.
+- Farm/field data must never ship in git — operator imports their own TaskData.

@@ -24,6 +24,10 @@ public:
     // Mark all cells across `width` metres, centred at world point (x,y) east/north,
     // perpendicular to headingDeg (clockwise from north).
     Q_INVOKABLE void mark(double x, double y, double headingDeg, double width);
+    // Interpolate marks from (x0,y0) → (x1,y1) so sparse GPS does not leave
+    // along-track holes between accepted samples.
+    Q_INVOKABLE void markAlong(double x0, double y0, double x1, double y1,
+                               double headingDeg, double width);
     Q_INVOKABLE bool isCovered(double x, double y) const;
     Q_INVOKABLE void reset();
 
@@ -50,6 +54,10 @@ public:
     Q_INVOKABLE QVariantList visibleCellTiles(double minx, double miny,
                                               double maxx, double maxy, int maxN,
                                               int minTileCells) const;
+    // Row-band RLE: contiguous ix runs only (never fill gaps between passes).
+    Q_INVOKABLE QVariantList visibleCellSpans(double minx, double miny,
+                                              double maxx, double maxy, int maxN,
+                                              int rowMergeCells) const;
 
 signals:
     void changed();
@@ -58,6 +66,7 @@ signals:
 private:
     qint64 key(int ix, int iy) const
     { return static_cast<qint64>(ix + 2000000) * 4000001LL + (iy + 2000000); }
+    void stampCross(double x, double y, double headingDeg, double width);
 
     struct ChunkBox { double minx; double miny; double maxx; double maxy; };
 

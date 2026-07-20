@@ -147,26 +147,28 @@ GpsFilter::Output GpsFilter::update(double rawX, double rawY, double speedKmh,
     out.x = m_fx.filter(rawX, dt, ep.mincutoff, ep.beta, kDcutoff);
     out.y = m_fy.filter(rawY, dt, ep.mincutoff, ep.beta, kDcutoff);
 
-    // Heading EMA time-constant scales with boom width (capped).
-    double tau = headTauBase(tier) + kHeadKWidth * (widthM > 0.0 ? widthM : 0.0);
-    if (tau > kHeadTauMax)
-        tau = kHeadTauMax;
-    const double aHead = dt / (tau + dt);
-
     if (trueHeadingDeg >= 0.0) {
-        // Authoritative heading (dual-antenna / INS): trust it, but still EMA out
-        // small jitter through the same unit-vector smoother.
+        // JD TCM / dual-antenna yaw is authoritative. Do NOT apply the
+        // boom-width EMA here — that τ (~2 s on a 36 m boom) made coverage and
+        // the map heading lag the machine (classic “sway” / skewed swaths).
+        // Tiny blend only to kill single-sample TCM jitter.
+        constexpr double kTrueHeadTau = 0.05; // seconds
+        const double aTrue = dt / (kTrueHeadTau + dt);
         const double br = trueHeadingDeg * kPi / 180.0;
         const double s = std::sin(br), c = std::cos(br);
         if (!m_haveHeading) {
             m_sinH = s; m_cosH = c; m_haveHeading = true;
         } else {
-            m_sinH += aHead * (s - m_sinH);
-            m_cosH += aHead * (c - m_cosH);
+            m_sinH += aTrue * (s - m_sinH);
+            m_cosH += aTrue * (c - m_cosH);
         }
         m_headingDeg = norm360(std::atan2(m_sinH, m_cosH) * 180.0 / kPi);
     } else if (m_havePos && speedKmh >= kHoldSpeedKmh) {
-        // Derive heading from the SMOOTHED track (bearing between filtered fixes).
+        // Track-derived COG: width-scaled EMA (noisy at RTK centimetre scale).
+        double tau = headTauBase(tier) + kHeadKWidth * (widthM > 0.0 ? widthM : 0.0);
+        if (tau > kHeadTauMax)
+            tau = kHeadTauMax;
+        const double aHead = dt / (tau + dt);
         const double dEast = out.x - m_lastX;
         const double dNorth = out.y - m_lastY;
         if (std::sqrt(dEast * dEast + dNorth * dNorth) >= kMinStepM) {

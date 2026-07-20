@@ -2,6 +2,7 @@ import QtQuick 2.15
 import QtQuick.Shapes 1.15
 import "Style.js" as Style
 import "Icons.js" as Icons
+import "RecordPoint.js" as RecordPoint
 
 // Heading-up field view. Tractor locked centre pointing up; ground + coverage
 // pan/rotate underneath. Coverage is recorded per-section at the implement
@@ -36,7 +37,7 @@ Item {
     property string _dbgEnsure: "(not run)"
     // Default framing: at userZoom 1 the bottom edge sits ~80 m behind the
     // implement. Derived from the live screen size so it fits any tablet.
-    readonly property real _frameMetres: app.implementOffset + 80
+    readonly property real _frameMetres: app.recordOffsetM + 80
     readonly property real _framePx: Math.max(40, height - cy)
     readonly property real _baseScale: _framePx / Math.max(20, _frameMetres)
 
@@ -220,19 +221,23 @@ Item {
     }
 
     // ---- Coverage (per section) ----
-    // Frozen chunks are triangulated once and never touched again; only the
-    // small active chunk per section is re-evaluated each fix. This keeps the
-    // per-fix render cost flat regardless of how much has been covered.
+    // Geometry is stored as frozen chunks + one active chunk per section. Both
+    // are painted as cheap rotated rects (never Shape/PathPolyline) — thick
+    // PathPolyline tessellation on Adreno/Mali wedged the UI after a few minutes
+    // of Record Coverage on the Samsung cab tablets.
     property var doneStrokes: []    // frozen chunks {w, pts}; mutated in place (push)
     property int doneCount: 0
     property var activeStrokes: []  // per-section growing chunk {w, pts} or null
     property var sectionOn: []      // bool per section (bar state)
     property int activeVersion: 0
-    // Paint refresh is throttled separately so GPS fixes can mark cells without
-    // retessellating PathPolyline/Shape on the Mali-400 every fix (UI wedge).
+    // Paint refresh is throttled so GPS fixes can mark cells without rebuilding
+    // every visible rect segment on every fix.
     property int _paintVersion: 0
     property real _lastRx: NaN
     property real _lastRy: NaN
+    // Last marked section centres (east/north) — markAlong fills GPS gaps.
+    property var _lastSecE: []
+    property var _lastSecN: []
     property var _replayMarks: []
     property int _replayMarkIdx: 0
     readonly property int _chunkMax: 150
@@ -277,8 +282,11 @@ Item {
             var b = field._chunkBbox(st.pts, st.w || 0);
             st.bbox = b;
             coverage.addChunkBox(b.minx, b.miny, b.maxx, b.maxy);
-            field.doneStrokes.push(st);
-            field.doneCount++;
+            // Reassign — in-place push is lost on Android QML engines (SM-T545).
+            var ds = field.doneStrokes.slice();
+            ds.push(st);
+            field.doneStrokes = ds;
+            field.doneCount = ds.length;
         }
     }
     function _freezeAllActive() {
@@ -287,27 +295,29 @@ Item {
         field.activeVersion++;
         field._paintVersion = field.activeVersion;
     }
+    function _commitActive() {
+        field.activeStrokes = field.activeStrokes.slice();
+        field.activeVersion++;
+    }
 
     // Mali-safe stroke tessellation (same approach as PhoneMapView._covPaintSegs).
-    function _appendWorldStrokeSegs(st, out, maxN) {
-        if (!st || !st.pts || st.pts.length < 1 || out.length >= maxN)
+    // Appends up to budgetN segments for THIS stroke only (fair per-section paint).
+    // Path-aligned ribbons first — rot:0 point stamps used to consume the budget
+    // before any ribbon, starving frozen history into a dashed / 1-section trail.
+    function _appendWorldStrokeSegs(st, out, budgetN) {
+        if (!st || !st.pts || st.pts.length < 1 || budgetN < 1)
             return;
         var halfW = Math.max(0.25, (st.w || app.implementWidth) * 0.5);
         var pts = st.pts;
-        var step = pts.length > 120 ? Math.ceil(pts.length / 120) : 1;
-        for (var j = 0; j < pts.length; j += step) {
-            if (out.length >= maxN)
-                break;
-            var p = pts[j];
-            out.push({ x: p.x, y: p.y, w: halfW * 2, h: halfW * 2, rot: 0 });
-        }
-        for (var k = 0; k < pts.length - 1; k += step) {
-            if (out.length >= maxN)
-                break;
+        var startLen = out.length;
+        var limit = startLen + budgetN;
+        for (var k = 0; k < pts.length - 1; ++k) {
+            if (out.length >= limit)
+                return;
             var p0 = pts[k], p1 = pts[k + 1];
             var dx = p1.x - p0.x, dy = p1.y - p0.y;
             var len = Math.sqrt(dx * dx + dy * dy);
-            if (len < 0.05)
+            if (len < 0.02)
                 continue;
             out.push({
                 x: (p0.x + p1.x) * 0.5,
@@ -317,6 +327,11 @@ Item {
                 rot: Math.atan2(dy, dx) * 180 / Math.PI
             });
         }
+        // Carry-over after chunk freeze: one point, no segment yet.
+        if (pts.length === 1 && out.length < limit) {
+            var p = pts[0];
+            out.push({ x: p.x, y: p.y, w: halfW * 2, h: halfW * 2, rot: 0 });
+        }
     }
     function _strokesForActivePaint() {
         var out = [];
@@ -324,26 +339,50 @@ Item {
             return out;
         for (var i = 0; i < field.activeStrokes.length; ++i) {
             var st = field.activeStrokes[i];
-            if (st && st.pts && st.pts.length >= 2)
+            // >= 1 so a section stays visible after chunk freeze (carry-over point).
+            if (st && st.pts && st.pts.length >= 1)
                 out.push(st);
         }
         return out;
     }
     readonly property var _activePaintSegs: {
         var strokes = field._strokesForActivePaint();
-        var _dep = [field._paintVersion, strokes.length].join("|");
+        var _dep = [field._paintVersion, field.activeVersion, strokes.length].join("|");
         var out = [];
-        var maxSeg = 240;
-        for (var i = 0; i < strokes.length && out.length < maxSeg; ++i)
-            field._appendWorldStrokeSegs(strokes[i], out, maxSeg);
+        // Fair budget: old maxSeg=240 let section 0 alone consume the whole pool
+        // → only one section's trail painted ("1 section recording").
+        var n = Math.max(1, strokes.length);
+        var per = Math.max(80, Math.floor(2400 / n));
+        for (var i = 0; i < strokes.length; ++i)
+            field._appendWorldStrokeSegs(strokes[i], out, per);
+        return out;
+    }
+    // Viewport-culled frozen chunks → bounded rect segments (no PathPolyline).
+    readonly property var _frozenPaintSegs: {
+        var idxs = field._visChunks;
+        var _dep = [field.doneCount, field._paintVersion,
+                    field._covMinX, field._covMinY,
+                    field._covMaxX, field._covMaxY,
+                    idxs ? idxs.length : 0].join("|");
+        var out = [];
+        if (!idxs || !idxs.length)
+            return out;
+        var n = Math.max(1, idxs.length);
+        // Higher floor: many visible chunks used to leave ~40 slots each, all
+        // burned on point stamps before ribbons (segments-first now; keep headroom).
+        var per = Math.max(120, Math.floor(6000 / n));
+        for (var i = 0; i < idxs.length; ++i)
+            field._appendWorldStrokeSegs(field.doneStrokes[idxs[i]], out, per);
         return out;
     }
 
     Timer {
         id: paintCoalesce
-        interval: 250
+        interval: 100
         repeat: false
-        onTriggered: { field._paintVersion = field.activeVersion; }
+        // Always bump — assigning activeVersion is a no-op when only cells changed
+        // (replay / mark-only), so cell paint would never refresh.
+        onTriggered: { field._paintVersion = field._paintVersion + 1; }
     }
     Timer {
         id: coverageReplayTimer
@@ -369,6 +408,12 @@ Item {
             field.doneStrokes = []; field.doneCount = 0;
             field.activeStrokes = []; field.sectionOn = [];
             field.activeVersion++;
+            field._paintVersion = field.activeVersion;
+        }
+        function onChanged() {
+            // Cell-span paint depends on coverage.cellCount / areaHa — coalesce.
+            if (!paintCoalesce.running)
+                paintCoalesce.start();
         }
     }
 
@@ -387,9 +432,13 @@ Item {
                     field._lastRx = NaN;
                     field._lastRy = NaN;
                 }
+                field._lastSecE = [];
+                field._lastSecN = [];
             } else {
                 field._lastRx = NaN;
                 field._lastRy = NaN;
+                field._lastSecE = [];
+                field._lastSecN = [];
                 field._freezeAllActive();       // close open chunks; lift implement
                 field.sectionOn = [];
                 // Persist off the hot path — GeoJSON serialisation can block the UI
@@ -455,37 +504,11 @@ Item {
         }
     }
 
-    // Tilt-corrected, set-back implement recording point in world metres
-    // (x=east, y=north). Two corrections vs the raw antenna position:
-    //   1) TCM terrain compensation — the GPS antenna rides high on the machine,
-    //      so when it tilts the antenna shifts off the true ground point under it.
-    //      Project it back down using roll/pitch and the antenna height:
-    //      lateral ≈ h·sin(roll), longitudinal ≈ h·sin(pitch), rotated by heading.
-    //   2) Implement set-back — the boom records implementOffset metres behind the
-    //      tractor (aligned with the boom bar drawn behind the machine).
-    // The map keeps the antenna at screen centre; only this recorded point moves.
+    // Set-back implement recording point (east, north). Terrain-comp (roll/pitch)
+    // is parked in RecordPoint.js — see DEV_NOTES TCM section. Map keeps the
+    // antenna at screen centre; the boom draws at this set-back point.
     function _recordPoint() {
-        var hr = gps.headingDeg * Math.PI / 180;
-        var sinH = Math.sin(hr), cosH = Math.cos(hr);
-        var gx = gps.localX, gy = gps.localY;
-        var h = app.antennaHeight;
-        if (gps.hasAttitude && h > 0.01) {
-            // Clamp to a sane envelope so a bad TCM decode can't fling the point.
-            var roll = Math.max(-30, Math.min(30, gps.rollDeg)) * Math.PI / 180;
-            var pitch = Math.max(-30, Math.min(30, gps.pitchDeg)) * Math.PI / 180;
-            var latOff = h * Math.sin(roll);   // antenna right of the ground point
-            var lonOff = h * Math.sin(pitch);  // antenna ahead of the ground point
-            // right (east,north) = (cosH, -sinH); forward (east,north) = (sinH, cosH)
-            gx -= latOff * cosH + lonOff * sinH;
-            gy -= latOff * (-sinH) + lonOff * cosH;
-        }
-        var off = app.implementOffset;
-        var px = gx - off * sinH, py = gy - off * cosH;
-        // A non-finite result (bad heading/attitude decode) must never reach the
-        // coverage grid or a stroke point array — signal "no point" instead.
-        if (!isFinite(px) || !isFinite(py))
-            return null;
-        return { x: px, y: py };
+        return RecordPoint.recordLocal(gps, app);
     }
 
     // ---- Job coverage persistence (re-enterable work) ----
@@ -594,7 +617,7 @@ Item {
             trackName: app.trackName,
             areaHa: coverage.areaHa,
             implementWidthM: app.implementWidth,
-            implementOffsetM: app.implementOffset,
+            implementOffsetM: app.recordOffsetM,
             antennaHeightM: app.antennaHeight,
             originLat: gps.originLat(), originLon: gps.originLon(),
             source: app.activeSource
@@ -679,6 +702,39 @@ Item {
         }
     }
 
+    // Approximate great-circle distance (m) — used to detect a wrong hemisphere /
+    // latlon-mode mismatch when JD GPS connects far from the paddock ring.
+    function _haversineM(lat1, lon1, lat2, lon2) {
+        var R = 6371000.0
+        var p1 = lat1 * Math.PI / 180, p2 = lat2 * Math.PI / 180
+        var dLat = (lat2 - lat1) * Math.PI / 180
+        var dLon = (lon2 - lon1) * Math.PI / 180
+        var a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+              + Math.cos(p1) * Math.cos(p2) * Math.sin(dLon / 2) * Math.sin(dLon / 2)
+        return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+    }
+
+    // If a live JD fix is many km from the active paddock, re-pin the local frame
+    // to the boundary centroid so the ring is on-screen again. Does not rewrite
+    // GPS — if the fix itself is wrong (bad latlon-mode), tractor will still sit
+    // far away; check IsobusWifiHub / gps_bridge uses jd_atx (not j1939).
+    function _healOriginIfGpsFarFromPaddock() {
+        if (!gps.hasFix || !field._validLatLon(gps.latitude, gps.longitude))
+            return
+        var c = field._boundaryCentroid()
+        if (!c)
+            return
+        var d = field._haversineM(gps.latitude, gps.longitude, c.lat, c.lon)
+        if (d < 5000)
+            return
+        if (!gps.hasOrigin || !field._validLatLon(gps.originLat(), gps.originLon())
+                || field._haversineM(gps.originLat(), gps.originLon(), c.lat, c.lon) > 2500) {
+            gps.setOrigin(c.lat, c.lon)
+            if (field._dbgOn)
+                field._dbgEnsure = "re-pin origin to paddock (GPS " + (d / 1000).toFixed(1) + " km away)"
+        }
+    }
+
     // Sync the loaded coverage to the active field: save the outgoing job, then
     // load the incoming one (re-entry). Called on field switch + at startup.
     function _syncActiveField() {
@@ -727,6 +783,7 @@ Item {
     Connections {
         target: gps
         function onFixChanged() {
+            field._healOriginIfGpsFarFromPaddock();
             if (!app.recordingCoverage || !gps.hasOrigin)
                 return;
             var hr = gps.headingDeg * Math.PI / 180;
@@ -741,7 +798,7 @@ Item {
                 return;
             }
             var dx = rx - field._lastRx, dy = ry - field._lastRy;
-            if (dx * dx + dy * dy < 0.25)   // >= 0.5 m
+            if (dx * dx + dy * dy < 0.0225)   // >= 0.15 m — smooth trail at crawl speeds
                 return;
             field._lastRx = rx; field._lastRy = ry;
 
@@ -753,6 +810,10 @@ Item {
             var N = field.sectionCount;
             var rex = Math.cos(hr), rny = -Math.sin(hr);  // right (east,north)
             if (field.activeStrokes.length !== N) field.activeStrokes = field._nulls(N);
+            var act = field.activeStrokes.slice();
+            var lastE = field._lastSecE.slice();
+            var lastN = field._lastSecN.slice();
+            while (lastE.length < N) { lastE.push(NaN); lastN.push(NaN); }
             var onArr = [];
             var cum = -app.implementWidth / 2;            // left edge of the boom
             for (var i = 0; i < N; ++i) {
@@ -761,32 +822,38 @@ Item {
                 cum += secW;
                 var se = rx + t * rex;
                 var sn = ry + t * rny;
-                if (!isFinite(se) || !isFinite(sn)) { onArr.push(false); continue; }
-                var on = !(app.sectionControl && coverage.isCovered(se, sn));
-                onArr.push(on);
-                if (on) {
+                if (!isFinite(se) || !isFinite(sn) || !(secW > 0)) {
+                    onArr.push(false);
+                    continue;
+                }
+                // Section-control lamp only — never gate the trail on isCovered.
+                var already = coverage.isCovered(se, sn);
+                onArr.push(!(app.sectionControl && already));
+                if (isFinite(lastE[i]) && isFinite(lastN[i]))
+                    coverage.markAlong(lastE[i], lastN[i], se, sn, gps.headingDeg, secW);
+                else
                     coverage.mark(se, sn, gps.headingDeg, secW);
-                    var st = field.activeStrokes[i];
-                    if (!st || st.w !== secW) {
-                        // new section, or its width was just edited: close the old
-                        // chunk so the worked swath keeps the width it was laid at.
-                        if (st) field._freeze(st);
-                        st = { w: secW, pts: [], tr: tgt, tu: tgu }; field.activeStrokes[i] = st;
-                    }
-                    st.pts.push(Qt.point(se, -sn));
-                    if (st.pts.length >= field._chunkMax) {
-                        // freeze this chunk; continue a new one from the last point
-                        field._freeze(st);
-                        field.activeStrokes[i] = { w: secW, tr: tgt, tu: tgu,
-                                                   pts: [ st.pts[st.pts.length - 1] ] };
-                    }
-                } else if (field.activeStrokes[i]) {
-                    field._freeze(field.activeStrokes[i]);
-                    field.activeStrokes[i] = null;
+                lastE[i] = se;
+                lastN[i] = sn;
+                var st = act[i];
+                if (!st || st.w !== secW) {
+                    if (st) field._freeze(st);
+                    st = { w: secW, pts: [], tr: tgt, tu: tgu };
+                    act[i] = st;
+                }
+                st.pts = (st.pts ? st.pts.slice() : []).concat([Qt.point(se, -sn)]);
+                act[i] = st;
+                if (st.pts.length >= field._chunkMax) {
+                    field._freeze(st);
+                    act[i] = { w: secW, tr: tgt, tu: tgu,
+                               pts: [ st.pts[st.pts.length - 1] ] };
                 }
             }
+            field._lastSecE = lastE;
+            field._lastSecN = lastN;
+            field.activeStrokes = act;
             field.sectionOn = onArr;
-            field.activeVersion++;
+            field._commitActive();
             if (!paintCoalesce.running)
                 paintCoalesce.start();
         }
@@ -969,10 +1036,10 @@ Item {
 
     // ---- Viewport culling of frozen coverage chunks (1000 ha worked stays smooth) ----
     // Same approach as the run lines: only frozen chunks whose world bbox intersects
-    // the view are instantiated. The C++ Coverage store does the bbox query over a
-    // compact vector; here we build a QUANTISED view rect so the visible set (and the
-    // Repeater) changes only when the view moves a cell or a chunk freezes — never
-    // per fix. Zoomed right out (fit), the query strides the result down to _covMaxN.
+    // the view are turned into paint segments. The C++ Coverage store does the bbox
+    // query over a compact vector; here we build a QUANTISED view rect so the visible
+    // set changes only when the view moves a cell or a chunk freezes — never per fix.
+    // Zoomed right out (fit), the query strides the result down to _covMaxN.
     readonly property int _covMaxN: 300
     readonly property real _covQuant: 64
     // View centre in swath coords (x = east, y = -north), matching the chunk bboxes.
@@ -995,6 +1062,32 @@ Item {
     readonly property var _visChunks: (field.doneCount,
         coverage.visibleChunks(field._covMinX, field._covMinY,
                                field._covMaxX, field._covMaxY, field._covMaxN))
+
+    // Cell-span fill (same as PhoneMapView) — guaranteed boom-width trail even when
+    // stroke tessellation is starved. mark() stamps cells; this paints them.
+    readonly property real _minCellScreenPx: 8.0
+    readonly property int _cellPaintMax: field.fitField ? 2500 : 2000
+    readonly property int _rowMergeCells: Math.max(1,
+        Math.ceil((field._minCellScreenPx / Math.max(0.05, field.viewScale)) / 0.5))
+    readonly property var _visCellPaint: {
+        // Do NOT read coverage.cellCount / areaHa here — QML would rebuild this
+        // on every mark(). paintCoalesce bumps _paintVersion on coverage.changed.
+        var _dep = [
+            field._paintVersion,
+            field._covMinX, field._covMinY, field._covMaxX, field._covMaxY,
+            field.viewScale, field._rowMergeCells
+        ].join("|");
+        var spans = coverage.visibleCellSpans(field._covMinX, field._covMinY,
+                                            field._covMaxX, field._covMaxY,
+                                            field._cellPaintMax,
+                                            field._rowMergeCells);
+        var out = [];
+        for (var i = 0; i < spans.length; ++i) {
+            var t = spans[i];
+            out.push({ x: t.x, y: t.y, w: t.w, h: t.h });
+        }
+        return out;
+    }
 
     function _abPts(line, koff) {
         if (!line) return [];
@@ -1067,33 +1160,35 @@ Item {
             Text { text: "E"; color: Style.cardinal; font.pixelSize: 14; x: 110; y: -8 }
             Text { text: "W"; color: Style.cardinal; font.pixelSize: 14; x: -118; y: -8 }
 
-            // coverage swaths — frozen chunks, viewport-culled (see _visChunks). The
-            // model is the bounded list of chunk indices whose bbox intersects the
-            // view, so a fully-worked 1000 ha field renders O(visible) chunks, not
-            // all of them. Each chunk is triangulated once; the same >= 2-point guard
-            // applies so a null/short chunk never reaches the Mali-400 GL ES2 backend.
+            // Cell grid fill first (area source) — solid boom-width trail.
             Repeater {
-                model: field._visChunks
-                Shape {
-                    id: doneShape
-                    readonly property var _st: field.doneStrokes[modelData]
-                    readonly property var _pts: (_st && _st.pts && _st.pts.length >= 2) ? _st.pts : []
-                    readonly property real _w: (_st && _st.pts && _st.pts.length >= 2) ? _st.w : 0
-                    visible: _pts.length >= 2
-                    ShapePath {
-                        strokeColor: "#883ddc84"
-                        strokeWidth: doneShape._w
-                        fillColor: "transparent"
-                        capStyle: ShapePath.RoundCap
-                        joinStyle: ShapePath.RoundJoin
-                        PathPolyline { path: doneShape._pts }
+                model: field._visCellPaint
+                Rectangle {
+                    x: modelData.x - 0.05
+                    y: modelData.y - 0.05
+                    width: modelData.w + 0.1
+                    height: modelData.h + 0.1
+                    color: "#883ddc84"
+                }
+            }
+            // Boom-width stroke overlays (frozen + active). Fair per-section budget
+            // so section 0 cannot starve the rest of the boom.
+            Repeater {
+                model: field._frozenPaintSegs
+                Item {
+                    x: modelData.x - modelData.w * 0.5
+                    y: modelData.y - modelData.h * 0.5
+                    width: modelData.w
+                    height: modelData.h
+                    rotation: modelData.rot
+                    transformOrigin: Item.Center
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: Math.min(width, height) * 0.45
+                        color: "#883ddc84"
                     }
                 }
             }
-
-            // Active swaths — growing chunks only. Frozen chunks stay on Shape
-            // (triangulated once); live strokes use cheap rotated rects so the
-            // Mali-400 is not retessellating PathPolyline on every GPS fix.
             Repeater {
                 model: field._activePaintSegs
                 Item {
@@ -1131,6 +1226,21 @@ Item {
                     // large ones — the boundary still draws as a bright outline.
                     fillColor: boundaryShape.ring.length <= field._maxFillVerts ? "#22ff1aa3" : "transparent"
                     PathPolyline { path: boundaryShape.visible ? boundaryShape.ring : [] }
+                }
+            }
+
+            Shape {
+                id: draftBoundaryShape
+                readonly property var ring: (gps.hasOrigin && farm.boundaryDraftCount >= 2)
+                                            ? field._mapRing(farm.boundaryDraftPoints,
+                                                           !farm.boundaryRecording && farm.boundaryDraftCount >= 3)
+                                            : []
+                visible: ring.length >= 2
+                ShapePath {
+                    strokeColor: farm.boundaryRecording ? "#ffee00" : "#ffaa00"
+                    strokeWidth: draftBoundaryShape.visible ? Math.max(0.8, 2.8 / field.viewScale) : 0
+                    fillColor: "transparent"
+                    PathPolyline { path: draftBoundaryShape.visible ? draftBoundaryShape.ring : [] }
                 }
             }
 
@@ -1290,9 +1400,9 @@ Item {
                 // boom arm: antenna (local 0,-offset) -> record point (local 0,0)
                 Rectangle {
                     width: 0.4
-                    height: app.implementOffset
+                    height: app.recordOffsetM
                     x: -width / 2
-                    y: -app.implementOffset
+                    y: -app.recordOffsetM
                     color: "#b9781b"
                     antialiasing: true
                 }

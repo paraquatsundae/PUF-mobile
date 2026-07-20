@@ -222,6 +222,22 @@ void AppController::setUdpPort(int p)
     }
 }
 
+void AppController::setHubHost(const QString &h)
+{
+    if (h != m_hubHost) {
+        m_hubHost = h;
+        emit hubHostChanged();
+    }
+}
+
+void AppController::setHubWebPort(int p)
+{
+    if (p > 0 && p <= 65535 && p != m_hubWebPort) {
+        m_hubWebPort = p;
+        emit hubWebPortChanged();
+    }
+}
+
 void AppController::setSource(GpsSource *src)
 {
     if (m_source) {
@@ -375,6 +391,39 @@ void AppController::setImplementOffset(double d)
     if (!qFuzzyCompare(d + 1.0, m_implementOffset + 1.0)) {
         m_implementOffset = d;
         emit implementOffsetChanged();
+        emit recordOffsetChanged();
+    }
+}
+
+void AppController::setRecordAttachment(int t)
+{
+    if (t < 0) t = 0;
+    if (t > 2) t = 2;
+    if (m_recordAttachment != t) {
+        m_recordAttachment = t;
+        emit recordAttachmentChanged();
+        emit recordOffsetChanged();
+    }
+}
+
+void AppController::setHitchOffsetM(double d)
+{
+    if (d < 0.0) d = 0.0;
+    if (d > 20.0) d = 20.0;
+    if (!qFuzzyCompare(d + 1.0, m_hitchOffsetM + 1.0)) {
+        m_hitchOffsetM = d;
+        emit hitchOffsetChanged();
+        emit recordOffsetChanged();
+    }
+}
+
+double AppController::recordOffsetM() const
+{
+    switch (m_recordAttachment) {
+    case 0: return 0.0;
+    case 2: return m_hitchOffsetM;
+    case 1:
+    default: return m_implementOffset;
     }
 }
 
@@ -479,6 +528,8 @@ void AppController::saveSettings()
     s.setValue(QStringLiteral("sectionWidths"), sw.join(QLatin1Char(',')));
     s.setValue(QStringLiteral("trackSpacing"), m_trackSpacing);
     s.setValue(QStringLiteral("implementOffset"), m_implementOffset);
+    s.setValue(QStringLiteral("recordAttachment"), m_recordAttachment);
+    s.setValue(QStringLiteral("hitchOffsetM"), m_hitchOffsetM);
     s.setValue(QStringLiteral("antennaHeight"), m_antennaHeight);
     s.setValue(QStringLiteral("tankSizeL"), m_tankSizeL);
     s.setValue(QStringLiteral("sectionControl"), m_sectionControl);
@@ -496,6 +547,11 @@ void AppController::saveSettings()
     s.setValue(QStringLiteral("serialPort"), m_serialPort);
     s.setValue(QStringLiteral("serialBaud"), m_serialBaud);
     s.setValue(QStringLiteral("btMac"), m_lastBtMac);
+    s.endGroup();
+
+    s.beginGroup(QStringLiteral("hub"));
+    s.setValue(QStringLiteral("host"), m_hubHost);
+    s.setValue(QStringLiteral("webPort"), m_hubWebPort);
     s.endGroup();
     s.sync();
 
@@ -541,6 +597,10 @@ void AppController::loadSettings()
     double off = s.value(QStringLiteral("implementOffset"), m_implementOffset).toDouble();
     if (off < 0.05) off = m_implementOffset;
     setImplementOffset(off);
+    setRecordAttachment(s.value(QStringLiteral("recordAttachment"), m_recordAttachment).toInt());
+    double hitch = s.value(QStringLiteral("hitchOffsetM"), m_hitchOffsetM).toDouble();
+    if (hitch < 0.05) hitch = m_hitchOffsetM;
+    setHitchOffsetM(hitch);
     setAntennaHeight(s.value(QStringLiteral("antennaHeight"), m_antennaHeight).toDouble());
     setTankSizeL(s.value(QStringLiteral("tankSizeL"), m_tankSizeL).toDouble());
     setSectionControl(s.value(QStringLiteral("sectionControl"), m_sectionControl).toBool());
@@ -548,7 +608,10 @@ void AppController::loadSettings()
     s.endGroup();
 
     s.beginGroup(QStringLiteral("source"));
-    m_lastSource = s.value(QStringLiteral("lastSource"), m_lastSource).toString();
+    m_lastSource = s.value(QStringLiteral("lastSource"),
+                          tabletGpsSupported() ? QStringLiteral("tablet")
+                                               : QStringLiteral("udp"))
+                     .toString();
     setUdpPort(s.value(QStringLiteral("udpPort"), m_udpPort).toInt());
     m_internalDevice = s.value(QStringLiteral("internalDevice"), m_internalDevice).toString();
     m_internalBaud = s.value(QStringLiteral("internalBaud"), m_internalBaud).toInt();
@@ -560,7 +623,13 @@ void AppController::loadSettings()
     m_lastBtMac = s.value(QStringLiteral("btMac"), m_lastBtMac).toString();
     s.endGroup();
 
+    s.beginGroup(QStringLiteral("hub"));
+    m_hubHost = s.value(QStringLiteral("host"), m_hubHost).toString();
+    setHubWebPort(s.value(QStringLiteral("webPort"), m_hubWebPort).toInt());
+    s.endGroup();
+
     emit internalDeviceChanged();
+    emit hubHostChanged();
     emit canDeviceChanged();
     emit sectionCountChanged();
     emit sectionWidthsChanged();

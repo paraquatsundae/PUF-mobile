@@ -1,6 +1,9 @@
 import QtQuick 2.15
+import QtQuick.Window 2.15
 import QtQuick.Shapes 1.15
 import "Style.js" as Style
+import "FormFactor.js" as FormFactor
+import "RecordPoint.js" as RecordPoint
 
 // Phone MAP: boundary outline + live coverage swaths. Modes: 0=chase, 1=top-down, 2=whole paddock.
 Item {
@@ -9,7 +12,11 @@ Item {
 
     property var recorder: null
     property int mode: 0
+    // Set by PhoneMapTab so chase framing clears the floating header.
+    property int topChromeInset: 0
+    property int bottomChromeInset: 0
 
+    readonly property bool _phoneLayout: FormFactor.isPhone(Screen.width, Screen.height)
     readonly property bool fitField: mode === 2 && gps.hasOrigin
     readonly property bool headingUp: mode === 0
     property real userZoom: 1.0
@@ -22,14 +29,30 @@ Item {
     readonly property real _maxLocalM: 200000
     readonly property int _maxRingVerts: 1000
 
+    // Usable map band between floating header and bottom zoom row.
+    readonly property real _viewTop: map.topChromeInset
+    readonly property real _viewBot: Math.max(map._viewTop + 80,
+                                              map.height - map.bottomChromeInset)
+    readonly property real _viewH: Math.max(1, map._viewBot - map._viewTop)
+    readonly property real _viewMidY: map._viewTop + map._viewH * 0.5
+
     readonly property real cx: width / 2
-    // Match FieldView chase anchor (74% down) so tilted ground fills the viewport.
-    readonly property real cy: mode === 0 ? height * 0.74 : height * 0.5
-    readonly property real horizonY: mode === 0 ? height * 0.34 : 0
+    readonly property real cy: {
+        if (mode !== 0)
+            return map._viewMidY
+        return map._viewTop + map._viewH * (map._phoneLayout ? 0.90 : 0.74)
+    }
+    readonly property real horizonY: {
+        if (mode !== 0)
+            return map._viewTop
+        if (map._phoneLayout)
+            return map._viewTop + Math.min(28, map._viewH * 0.05)
+        return height * 0.34
+    }
     readonly property bool chaseView: mode === 0 && !fitField
     property real tilt: chaseView ? 74 : 0
-    readonly property real _frameMetres: app.implementOffset + 80
-    readonly property real _framePx: Math.max(40, height - cy)
+    readonly property real _frameMetres: app.recordOffsetM + 80
+    readonly property real _framePx: Math.max(40, map._viewBot - cy)
     readonly property real _baseScale: _framePx / Math.max(20, _frameMetres)
 
     Behavior on userZoom {
@@ -133,7 +156,7 @@ Item {
         if (!fb) return _baseScale
         var w = Math.max(1, fb.maxx - fb.minx)
         var h = Math.max(1, fb.maxy - fb.miny)
-        return Math.min(width * 0.84 / w, height * 0.84 / h)
+        return Math.min(width * 0.84 / w, map._viewH * 0.84 / h)
     }
     readonly property real viewScale: {
         var base = fitField ? _fitScale : _baseScale
@@ -150,7 +173,7 @@ Item {
         return cx - (csx * Math.cos(a) - csy * Math.sin(a)) + panX
     }
     readonly property real viewOffY: {
-        if (fitField && fb) return height / 2 - viewScale * (fb.miny + fb.maxy) / 2 + panY
+        if (fitField && fb) return map._viewMidY - viewScale * (fb.miny + fb.maxy) / 2 + panY
         var a = viewRot * Math.PI / 180
         var cwx = following ? gps.localX : _anchorX
         var cwy = following ? gps.localY : _anchorY
@@ -191,27 +214,69 @@ Item {
         }
         return null
     }
-    // S911B Mali: thick Shape strokeWidth (boom m) is invisible; tablet uses Shape.
-    property bool preferRectSwaths: false
-    // Primary fill — 0.5 m cell grid (same data as areaHa; always joins).
+    // S911B Mali: thick Shape strokeWidth (boom m) is invisible; use rect swaths.
+    property bool preferRectSwaths: true
+    // Always paint cells (area source); swaths overlay when stroke pts exist.
     property bool preferCellPaint: true
-    readonly property int _cellPaintMax: map.fitField ? 2000 : (map.chaseView ? 1200 : 1500)
+    readonly property real _minCellScreenPx: 8.0
+    readonly property int _cellPaintMax: map.fitField ? 2500 : (map.chaseView ? 1500 : 2000)
+    readonly property int _rowMergeCells: Math.max(1,
+        Math.ceil((map._minCellScreenPx / Math.max(0.05, map.viewScale)) / 0.5))
     readonly property var _visCellPaint: {
-        if (!map.preferCellPaint || coverage.cellCount < 1)
+        // preferCellPaint only — never depend on cellCount/areaHa (rebuilds every mark).
+        if (!map.preferCellPaint)
             return []
         var _dep = [
-            map._paintTick, coverage.cellCount, coverage.areaHa,
+            map._paintTick,
             map._covMinX, map._covMinY, map._covMaxX, map._covMaxY,
-            map.viewScale, map.mode
+            map.viewScale, map.mode, map._rowMergeCells
         ].join("|")
-        var tiles = coverage.visibleCellTiles(map._covMinX, map._covMinY,
-                                              map._covMaxX, map._covMaxY,
-                                              map._cellPaintMax)
+        var spans = coverage.visibleCellSpans(map._covMinX, map._covMinY,
+                                            map._covMaxX, map._covMaxY,
+                                            map._cellPaintMax,
+                                            map._rowMergeCells)
         var out = []
-        for (var i = 0; i < tiles.length; ++i) {
-            var t = tiles[i]
+        for (var i = 0; i < spans.length; ++i) {
+            var t = spans[i]
             out.push({ x: t.x, y: t.y, w: t.w, h: t.h })
         }
+        return out
+    }
+    // Frozen swaths — cull by stroke bbox (chunk index != doneStrokes index when ck>done).
+    readonly property var _frozenPaintSegs: {
+        if (!map.recorder || map.recorder.doneCount < 1)
+            return []
+        var _dep = [
+            map._paintTick, map.recorder.doneCount,
+            map._covMinX, map._covMinY, map._covMaxX, map._covMaxY
+        ].join("|")
+        var out = []
+        var maxSeg = 1800
+        var qminx = map._covMinX, qminy = map._covMinY
+        var qmaxx = map._covMaxX, qmaxy = map._covMaxY
+        for (var i = 0; i < map.recorder.doneCount && out.length < maxSeg; ++i) {
+            var st = map.recorder.doneStrokes[i]
+            if (!st || !st.pts || st.pts.length < 2)
+                continue
+            if (st.bbox) {
+                var b = st.bbox
+                if (b.maxx < qminx || b.minx > qmaxx || b.maxy < qminy || b.miny > qmaxy)
+                    continue
+            }
+            map._appendWorldStrokeSegs(st, out, maxSeg)
+        }
+        return out
+    }
+    readonly property var _coveragePaintSegs: {
+        var _dep = [map._paintTick, map.recorder ? map.recorder.activeVersion : 0].join("|")
+        var out = []
+        var maxSeg = 2000
+        var frz = map._frozenPaintSegs
+        for (var i = 0; i < frz.length && out.length < maxSeg; ++i)
+            out.push(frz[i])
+        var strokes = map._strokesForActivePaint()
+        for (var j = 0; j < strokes.length && out.length < maxSeg; ++j)
+            map._appendWorldStrokeSegs(strokes[j], out, maxSeg)
         return out
     }
     function _appendWorldStrokeSegs(st, out, maxN) {
@@ -219,13 +284,7 @@ Item {
             return
         var halfW = Math.max(0.25, (st.w || app.implementWidth) * 0.5)
         var pts = st.pts
-        // No decimation — gaps between rects were the visible "not joining up" artefact.
-        for (var j = 0; j < pts.length; ++j) {
-            if (out.length >= maxN)
-                break
-            var p = pts[j]
-            out.push({ x: p.x, y: p.y, w: halfW * 2, h: halfW * 2, rot: 0 })
-        }
+        // Path-aligned ribbons first (point stamps used to starve the budget).
         for (var k = 0; k < pts.length - 1; ++k) {
             if (out.length >= maxN)
                 break
@@ -241,6 +300,10 @@ Item {
                 h: halfW * 2,
                 rot: Math.atan2(dy, dx) * 180 / Math.PI
             })
+        }
+        if (pts.length === 1 && out.length < maxN) {
+            var p = pts[0]
+            out.push({ x: p.x, y: p.y, w: halfW * 2, h: halfW * 2, rot: 0 })
         }
     }
     function _chunkSegs(st, maxN) {
@@ -282,6 +345,28 @@ Item {
             return
         var c = map._boundaryCentroid()
         if (c) gps.setOrigin(c.lat, c.lon)
+    }
+    function _haversineM(lat1, lon1, lat2, lon2) {
+        var R = 6371000.0
+        var p1 = lat1 * Math.PI / 180, p2 = lat2 * Math.PI / 180
+        var dLat = (lat2 - lat1) * Math.PI / 180
+        var dLon = (lon2 - lon1) * Math.PI / 180
+        var a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+              + Math.cos(p1) * Math.cos(p2) * Math.sin(dLon / 2) * Math.sin(dLon / 2)
+        return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+    }
+    function _healOriginIfGpsFarFromPaddock() {
+        if (!gps.hasFix || !map._validLatLon(gps.latitude, gps.longitude))
+            return
+        var c = map._boundaryCentroid()
+        if (!c)
+            return
+        var d = map._haversineM(gps.latitude, gps.longitude, c.lat, c.lon)
+        if (d < 5000)
+            return
+        if (!gps.hasOrigin || !map._validLatLon(gps.originLat(), gps.originLon())
+                || map._haversineM(gps.originLat(), gps.originLon(), c.lat, c.lon) > 2500)
+            gps.setOrigin(c.lat, c.lon)
     }
 
     readonly property real _viewHalfSpanM: {
@@ -364,24 +449,9 @@ Item {
         return out
     }
     // Implement recording point (behind tractor) for position marker on phone.
-    readonly property var _implPos: {
-        if (!gps.hasOrigin || !gps.hasFix)
-            return null
-        var hr = gps.headingDeg * Math.PI / 180
-        var sinH = Math.sin(hr), cosH = Math.cos(hr)
-        var gx = gps.localX, gy = gps.localY
-        var h = app.antennaHeight
-        if (gps.hasAttitude && h > 0.01) {
-            var roll = Math.max(-30, Math.min(30, gps.rollDeg)) * Math.PI / 180
-            var pitch = Math.max(-30, Math.min(30, gps.pitchDeg)) * Math.PI / 180
-            gx -= h * Math.sin(roll) * cosH + h * Math.sin(pitch) * sinH
-            gy -= h * Math.sin(roll) * (-sinH) + h * Math.sin(pitch) * cosH
-        }
-        var off = app.implementOffset
-        return { x: gx - off * sinH, y: gy - off * cosH }
-    }
+    readonly property var _implPos: RecordPoint.recordLocal(gps, app)
     // Temporary field diagnosis — flip on only when debugging paint on device.
-    property bool mapDebugOverlay: true
+    property bool mapDebugOverlay: false
     onRecorderChanged: map._paintTick++
     readonly property string debugLine: {
         var r = map.recorder
@@ -406,14 +476,15 @@ Item {
                + " ck:" + coverage.chunkCount
                + " vis:" + map._visChunks.length
                + " cellp:" + map._visCellPaint.length
+               + " swp:" + map._coveragePaintSegs.length
+               + " row:" + map._rowMergeCells
                + " live:" + map._activePaintSegs.length
                + " mode:" + map.mode
     }
-    readonly property int _statusInset: Math.max(28, platform.statusBarInset)
     Component.onCompleted: map._ensureOrigin()
     Timer {
         id: paintCoalesce
-        interval: 250
+        interval: 100
         repeat: false
         onTriggered: {
             map._paintVersion = map.recorder ? map.recorder.activeVersion : 0
@@ -422,12 +493,21 @@ Item {
     }
     Connections {
         target: coverage
-        function onChanged() { map._paintTick++ }
+        // Every coverage.mark that adds a cell emits changed(). Rebuilding the
+        // full cell-span paint list on each mark wedges the UI as cellCount
+        // grows — coalesce to the same 250 ms paint tick as live strokes.
+        function onChanged() {
+            if (!paintCoalesce.running)
+                paintCoalesce.start()
+        }
     }
     Connections {
         target: map.recorder
         enabled: map.recorder !== null
-        function onDoneCountChanged() { map._paintTick++ }
+        function onDoneCountChanged() {
+            if (!paintCoalesce.running)
+                paintCoalesce.start()
+        }
         function onActiveVersionChanged() {
             if (!paintCoalesce.running)
                 paintCoalesce.start()
@@ -438,11 +518,15 @@ Item {
         function onGeometryChanged() { map._ensureOrigin() }
         function onActiveChanged() { map._ensureOrigin() }
     }
+    Connections {
+        target: gps
+        function onFixChanged() { map._healOriginIfGpsFarFromPaddock() }
+    }
 
+    // Full-bleed ground so chase tilt never exposes theme.bg black strips.
     Rectangle {
         anchors.fill: parent
-        color: map.mode === 1 || map.fitField ? Style.ground : theme.bg
-        visible: !map.chaseView
+        color: map.chaseView || map.mode === 1 || map.fitField ? Style.ground : theme.bg
     }
 
     // Static ground fill below the horizon so chase tilt never exposes theme.bg.
@@ -538,21 +622,21 @@ Item {
                 color: Style.gridMajor
             }
 
-            // Primary coverage — 0.5 m cell grid in world space (matches areaHa).
+            // Cell grid — always on when cells exist (guaranteed fill).
             Repeater {
-                model: map._visCellPaint
+                model: map.preferCellPaint ? map._visCellPaint : []
                 Rectangle {
-                    x: modelData.x
-                    y: modelData.y
-                    width: modelData.w
-                    height: modelData.h
+                    x: modelData.x - 0.05
+                    y: modelData.y - 0.05
+                    width: modelData.w + 0.1
+                    height: modelData.h + 0.1
                     color: "#883ddc84"
                 }
             }
 
-            // Stroke overlay — live tail only (frozen area uses cell grid above).
+            // Boom-width swaths on top when stroke geometry is available.
             Repeater {
-                model: map.preferRectSwaths ? map._activePaintSegs : []
+                model: map.preferRectSwaths ? map._coveragePaintSegs : []
                 Item {
                     x: modelData.x - modelData.w * 0.5
                     y: modelData.y - modelData.h * 0.5
@@ -564,51 +648,6 @@ Item {
                         anchors.fill: parent
                         radius: Math.min(width, height) * 0.45
                         color: "#883ddc84"
-                    }
-                }
-            }
-
-            // Frozen swaths — Shape path when GPU supports thick stroke (tablet path).
-            Repeater {
-                model: map.preferRectSwaths ? map._visChunks : []
-                Item {
-                    id: doneChunk
-                    readonly property int _idx: modelData
-                    readonly property var _st: (map.recorder && doneChunk._idx >= 0
-                                                && doneChunk._idx < map.recorder.doneCount)
-                                               ? map.recorder.doneStrokes[doneChunk._idx] : null
-                    readonly property var _pts: (doneChunk._st && doneChunk._st.pts
-                                                 && doneChunk._st.pts.length >= 2)
-                                                ? doneChunk._st.pts : []
-                    readonly property real _w: doneChunk._pts.length >= 2 ? doneChunk._st.w : 0
-                    visible: doneChunk._pts.length >= 2
-                    Shape {
-                        visible: !map.preferCellPaint && !map.preferRectSwaths && doneChunk.visible
-                        ShapePath {
-                            strokeColor: "#883ddc84"
-                            strokeWidth: doneChunk._w
-                            fillColor: "transparent"
-                            capStyle: ShapePath.RoundCap
-                            joinStyle: ShapePath.RoundJoin
-                            PathPolyline { path: doneChunk.visible ? doneChunk._pts : [] }
-                        }
-                    }
-                    Repeater {
-                        model: map.preferRectSwaths && doneChunk.visible
-                               ? map._chunkSegs(doneChunk._st, 300) : []
-                        Item {
-                            x: modelData.x - modelData.w * 0.5
-                            y: modelData.y - modelData.h * 0.5
-                            width: modelData.w
-                            height: modelData.h
-                            rotation: modelData.rot
-                            transformOrigin: Item.Center
-                            Rectangle {
-                                anchors.fill: parent
-                                radius: Math.min(width, height) * 0.12
-                                color: "#883ddc84"
-                            }
-                        }
                     }
                 }
             }
@@ -625,6 +664,21 @@ Item {
                     PathPolyline { path: boundaryShape.visible ? boundaryShape.ring : [] }
                 }
                 Component.onDestruction: boundaryShape.visible = false
+            }
+
+            Shape {
+                id: draftBoundaryShape
+                readonly property var ring: (gps.hasOrigin && farm.boundaryDraftCount >= 2)
+                                            ? map._mapRing(farm.boundaryDraftPoints,
+                                                           !farm.boundaryRecording && farm.boundaryDraftCount >= 3)
+                                            : []
+                visible: ring.length >= 2
+                ShapePath {
+                    strokeColor: farm.boundaryRecording ? "#ffee00" : "#ffaa00"
+                    strokeWidth: draftBoundaryShape.visible ? Math.max(0.8, 2.5 / map.viewScale) : 0
+                    fillColor: "transparent"
+                    PathPolyline { path: draftBoundaryShape.visible ? draftBoundaryShape.ring : [] }
+                }
             }
         }
     }
@@ -688,9 +742,9 @@ Item {
 
                 Rectangle {
                     width: 0.4
-                    height: app.implementOffset
+                    height: app.recordOffsetM
                     x: -width / 2
-                    y: -app.implementOffset
+                    y: -app.recordOffsetM
                     color: "#b9781b"
                 }
                 Repeater {
@@ -802,11 +856,12 @@ Item {
         id: zoomRow
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottom: parent.bottom
-        anchors.bottomMargin: 16
-        spacing: 24
+        anchors.bottomMargin: Math.max(4, map.bottomChromeInset - 46)
+        spacing: map._phoneLayout ? 12 : 24
         z: 6
+        readonly property int _btn: map._phoneLayout ? 46 : 56
         Rectangle {
-            width: 56; height: 56; radius: 28
+            width: zoomRow._btn; height: zoomRow._btn; radius: zoomRow._btn / 2
             color: zoomOutMa.pressed ? theme.bannerHi : theme.panel
             border.color: theme.panelEdge
             Text { anchors.centerIn: parent; text: "−"; color: theme.text; font.pixelSize: 28; font.bold: true }
@@ -814,23 +869,23 @@ Item {
         }
         Rectangle {
             visible: !map.following && !map.fitField
-            width: 56; height: 56; radius: 28
+            width: zoomRow._btn; height: zoomRow._btn; radius: zoomRow._btn / 2
             color: recMa.pressed ? theme.bannerHi : theme.panel
             border.color: theme.accent
             Text { anchors.centerIn: parent; text: "◎"; color: theme.accent; font.pixelSize: 22 }
             MouseArea { id: recMa; anchors.fill: parent; onClicked: map.recenter() }
         }
         Rectangle {
-            width: 56; height: 56; radius: 28
+            width: zoomRow._btn; height: zoomRow._btn; radius: zoomRow._btn / 2
             color: zoomInMa.pressed ? theme.bannerHi : theme.panel
             border.color: theme.panelEdge
             Text { anchors.centerIn: parent; text: "+"; color: theme.text; font.pixelSize: 28; font.bold: true }
             MouseArea { id: zoomInMa; anchors.fill: parent; onClicked: map.zoomIn() }
         }
         Rectangle {
-            width: recordBtnMa.width + 24
-            height: 56
-            radius: 28
+            width: recordBtnMa.width + (map._phoneLayout ? 16 : 24)
+            height: zoomRow._btn
+            radius: zoomRow._btn / 2
             color: app.recordingCoverage
                    ? (recordBtnMa.pressed ? "#922b21" : "#c0392b")
                    : (recordBtnMa.pressed ? theme.bannerHi : theme.panel)

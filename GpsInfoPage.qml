@@ -173,25 +173,24 @@ Flickable {
 
                 Label { text: qsTr("Roll"); color: Style.textDim; font.pixelSize: 15 }
                 Label { Layout.fillWidth: true; horizontalAlignment: Text.AlignRight
-                        text: gps.hasAttitude ? gps.rollDeg.toFixed(1) + "\u00B0" : "\u2014"
-                        color: gps.hasAttitude ? Style.white : Style.textDim; font.pixelSize: 16 }
+                        text: gps.rollDeg.toFixed(1) + "\u00B0"
+                        color: Style.white; font.pixelSize: 16 }
 
                 Label { text: qsTr("Pitch"); color: Style.textDim; font.pixelSize: 15 }
                 Label { Layout.fillWidth: true; horizontalAlignment: Text.AlignRight
-                        text: gps.hasAttitude ? gps.pitchDeg.toFixed(1) + "\u00B0" : "\u2014"
-                        color: gps.hasAttitude ? Style.white : Style.textDim; font.pixelSize: 16 }
+                        text: gps.pitchDeg.toFixed(1) + "\u00B0"
+                        color: Style.white; font.pixelSize: 16 }
 
                 Label { text: qsTr("Yaw rate"); color: Style.textDim; font.pixelSize: 15 }
                 Label { Layout.fillWidth: true; horizontalAlignment: Text.AlignRight
-                        text: gps.hasAttitude ? gps.yawRateDegS.toFixed(1) + "\u00B0/s" : "\u2014"
-                        color: gps.hasAttitude ? Style.white : Style.textDim; font.pixelSize: 16 }
+                        text: gps.yawRateDegS.toFixed(1) + "\u00B0/s"
+                        color: Style.white; font.pixelSize: 16 }
 
                 Label {
                     Layout.columnSpan: 2
                     Layout.preferredWidth: page.width - 60
                     wrapMode: Text.WordWrap
-                    visible: !gps.hasAttitude
-                    text: qsTr("No attitude yet — the bridge must emit $PANDA (roll/pitch/yaw).")
+                    text: qsTr("Display only — antenna-height terrain-comp is parked (FEE6 roll invalid; FEE8 pitch biased). Heading still uses TCM yaw.")
                     color: Style.textDim; font.pixelSize: 12
                 }
             }

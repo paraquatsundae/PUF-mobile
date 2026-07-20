@@ -1,5 +1,6 @@
 import QtQuick 2.15
 import "Sections.js" as Sections
+import "RecordPoint.js" as RecordPoint
 
 // Shared coverage recorder: marks cells (MAIN headless) + stroke geometry (MAP overlay).
 Item {
@@ -21,27 +22,7 @@ Item {
         return app.implementWidth / sectionCount()
     }
     function recordPoint() {
-        if (!gps.hasFix)
-            return null
-        if (!gps.hasOrigin)
-            gps.setOrigin(gps.latitude, gps.longitude)
-        var hr = gps.headingDeg * Math.PI / 180
-        var sinH = Math.sin(hr), cosH = Math.cos(hr)
-        var gx = gps.localX, gy = gps.localY
-        var h = app.antennaHeight
-        if (gps.hasAttitude && h > 0.01) {
-            var roll = Math.max(-30, Math.min(30, gps.rollDeg)) * Math.PI / 180
-            var pitch = Math.max(-30, Math.min(30, gps.pitchDeg)) * Math.PI / 180
-            var latOff = h * Math.sin(roll)
-            var lonOff = h * Math.sin(pitch)
-            gx -= latOff * cosH + lonOff * sinH
-            gy -= latOff * (-sinH) + lonOff * cosH
-        }
-        var off = app.implementOffset
-        var px = gx - off * sinH, py = gy - off * cosH
-        if (!isFinite(px) || !isFinite(py))
-            return null
-        return { x: px, y: py }
+        return RecordPoint.recordLocal(gps, app)
     }
     function _nulls(n) { var a = []; for (var i = 0; i < n; ++i) a.push(null); return a }
     function _chunkBbox(pts, pad) {
@@ -101,7 +82,7 @@ Item {
                 return
             }
             var dx = rx - rec.lastRx, dy = ry - rec.lastRy
-            if (dx * dx + dy * dy < 0.25) return
+            if (dx * dx + dy * dy < 0.0225) return  // >= 0.15 m
             rec.lastRx = rx; rec.lastRy = ry
             var hr = gps.headingDeg * Math.PI / 180
             var N = rec.sectionCount()
@@ -115,24 +96,26 @@ Item {
                 var t = cum + w / 2
                 cum += w
                 var se = rx + t * rex, sn = ry + t * rny
-                if (!isFinite(se) || !isFinite(sn)) continue
-                var on = !(app.sectionControl && coverage.isCovered(se, sn))
-                if (on) {
+                if (!isFinite(se) || !isFinite(sn) || !(w > 0)) continue
+                // Always mark + stroke while recording. isCovered must not freeze
+                // the trail (see FieldView) — area cells stay unique in C++.
+                var st = act[i]
+                if (st && st.pts && st.pts.length > 0) {
+                    var prev = st.pts[st.pts.length - 1]
+                    coverage.markAlong(prev.x, -prev.y, se, sn, gps.headingDeg, w)
+                } else {
                     coverage.mark(se, sn, gps.headingDeg, w)
-                    var st = act[i]
-                    if (!st || st.w !== w) {
-                        if (st) rec._freeze(st)
-                        st = { w: w, pts: [] }
-                        act[i] = st
-                    }
-                    st.pts.push(Qt.point(se, -sn))
-                    if (st.pts.length >= rec._chunkMax) {
-                        rec._freeze(st)
-                        act[i] = { w: w, pts: [ st.pts[st.pts.length - 1] ] }
-                    }
-                } else if (act[i]) {
-                    rec._freeze(act[i])
-                    act[i] = null
+                }
+                if (!st || st.w !== w) {
+                    if (st) rec._freeze(st)
+                    st = { w: w, pts: [] }
+                    act[i] = st
+                }
+                st.pts = (st.pts ? st.pts.slice() : []).concat([Qt.point(se, -sn)])
+                act[i] = st
+                if (st.pts.length >= rec._chunkMax) {
+                    rec._freeze(st)
+                    act[i] = { w: w, pts: [ st.pts[st.pts.length - 1] ] }
                 }
             }
             rec.activeStrokes = act

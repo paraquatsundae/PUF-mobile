@@ -1,12 +1,57 @@
 import QtQuick 2.15
 import QtQuick.Layouts 1.15
+import QtQuick.Controls 2.15
 
 Item {
     id: paddockScreen
     signal back()
     signal fieldSelected(string clientId, string farmId, string fieldId, string fieldName)
+    signal recordBoundaryRequested()
 
     property var importFiles: []
+    property bool showNewPaddock: false
+    property string newPaddockName: ""
+
+    function ensureFarmTree() {
+        var cid = farm.browseClientId
+        if (farm.clients.length === 0)
+            cid = farm.addClient(qsTr("Operator"))
+        else if (!cid.length) {
+            cid = farm.clients[0].id
+            farm.browseClientId = cid
+        }
+        var fid = farm.browseFarmId
+        if (farm.farms.length === 0)
+            fid = farm.addFarm(cid, qsTr("Farm"))
+        else if (!fid.length) {
+            fid = farm.farms[0].id
+            farm.browseFarmId = fid
+        }
+        return { clientId: cid, farmId: fid }
+    }
+
+    function createPaddock(name) {
+        var n = (name || "").trim()
+        if (!n.length)
+            return
+        var t = paddockScreen.ensureFarmTree()
+        var fieldId = farm.addField(t.clientId, t.farmId, n)
+        farm.setActiveField(t.clientId, t.farmId, fieldId)
+        paddockScreen.showNewPaddock = false
+        paddockScreen.newPaddockName = ""
+        newPaddockDlg.close()
+        paddockScreen.recordBoundaryRequested()
+    }
+
+    Connections {
+        target: paddockScreen
+        function onShowNewPaddockChanged() {
+            if (paddockScreen.showNewPaddock)
+                newPaddockDlg.open()
+            else
+                newPaddockDlg.close()
+        }
+    }
 
     function rowColor(selected) {
         return selected ? theme.accent : theme.panel
@@ -22,23 +67,11 @@ Item {
         anchors.fill: parent
         spacing: 0
 
-        Rectangle {
+        PhoneSubScreenHeader {
             Layout.fillWidth: true
-            implicitHeight: 48
-            color: theme.banner
-            RowLayout {
-                anchors.fill: parent
-                anchors.margins: 8
-                Rectangle {
-                    implicitWidth: 80; implicitHeight: 36; radius: 6
-                    color: backMa.pressed ? theme.bannerHi : "transparent"
-                    border.color: theme.accent
-                    Text { anchors.centerIn: parent; text: "< SETUP"; color: theme.accent; font.bold: true }
-                    MouseArea { id: backMa; anchors.fill: parent; onClicked: paddockScreen.back() }
-                }
-                Text { text: qsTr("PADDOCK"); color: theme.text; font.pixelSize: 18; font.bold: true }
-                Item { Layout.fillWidth: true }
-            }
+            backLabel: "< SETUP"
+            title: qsTr("PADDOCK")
+            onBackClicked: paddockScreen.back()
         }
 
         Flickable {
@@ -242,11 +275,73 @@ Item {
 
                 RowLayout {
                     Layout.fillWidth: true
+                    spacing: 8
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: 44
+                        radius: 8
+                        color: newPadMa.pressed ? theme.bannerHi : theme.panel
+                        border.color: theme.accent
+                        Text {
+                            anchors.centerIn: parent
+                            text: qsTr("New paddock")
+                            color: theme.accent
+                            font.bold: true
+                        }
+                        MouseArea {
+                            id: newPadMa
+                            anchors.fill: parent
+                            onClicked: paddockScreen.showNewPaddock = true
+                        }
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: 44
+                        radius: 8
+                        color: recBndMa.pressed ? theme.bannerHi : theme.panel
+                        border.color: theme.panelEdge
+                        opacity: farm.hasActiveField ? 1.0 : 0.45
+                        Text {
+                            anchors.centerIn: parent
+                            text: qsTr("Record boundary")
+                            color: theme.text
+                            font.bold: true
+                        }
+                        MouseArea {
+                            id: recBndMa
+                            anchors.fill: parent
+                            enabled: farm.hasActiveField
+                            onClicked: paddockScreen.recordBoundaryRequested()
+                        }
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
                     Text {
                         text: qsTr("Import farm data")
                         color: theme.textDim
                         font.pixelSize: 13
                         Layout.fillWidth: true
+                    }
+                    Rectangle {
+                        implicitWidth: 80
+                        implicitHeight: 36
+                        radius: 6
+                        color: browseMa.pressed ? theme.bannerHi : theme.banner
+                        border.color: theme.accent
+                        Text {
+                            anchors.centerIn: parent
+                            text: qsTr("Browse")
+                            color: theme.accent
+                            font.bold: true
+                            font.pixelSize: 12
+                        }
+                        MouseArea {
+                            id: browseMa
+                            anchors.fill: parent
+                            onClicked: farmImport.openBrowser()
+                        }
                     }
                     Rectangle {
                         implicitWidth: 72
@@ -273,8 +368,16 @@ Item {
                 Text {
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
-                    text: qsTr("Folder: %1").arg(farm.defaultImportFolder())
+                    text: qsTr("Browse device files to copy or move into Farm_data, or use Scan for files already in Download/Farm_data.")
                     color: theme.textDim
+                    font.pixelSize: 11
+                }
+                Text {
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    visible: paddockScreen.importFiles.length === 0
+                    text: qsTr("No import files found. ISOXML adds its own clients/farms; KML needs a farm selected above.")
+                    color: "#e0a030"
                     font.pixelSize: 11
                 }
                 Repeater {
@@ -343,5 +446,86 @@ Item {
                 }
             }
         }
+    }
+
+    Popup {
+        id: newPaddockDlg
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(paddockScreen.width - 32, 360)
+        padding: 16
+        onClosed: paddockScreen.showNewPaddock = false
+        background: Rectangle {
+            color: theme.panel
+            border.color: theme.accent
+            radius: 10
+        }
+        ColumnLayout {
+            width: parent.width
+            spacing: 12
+            Text {
+                text: qsTr("New paddock name")
+                color: theme.text
+                font.pixelSize: 16
+                font.bold: true
+            }
+            TextField {
+                id: newPadField
+                Layout.fillWidth: true
+                text: paddockScreen.newPaddockName
+                onTextChanged: paddockScreen.newPaddockName = text
+                placeholderText: qsTr("e.g. North block")
+                color: theme.text
+                selectByMouse: true
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: 44
+                    radius: 8
+                    color: cancelPadMa.pressed ? theme.bannerHi : theme.panel
+                    Text {
+                        anchors.centerIn: parent
+                        text: qsTr("Cancel")
+                        color: theme.text
+                    }
+                    MouseArea {
+                        id: cancelPadMa
+                        anchors.fill: parent
+                        onClicked: {
+                            paddockScreen.showNewPaddock = false
+                            paddockScreen.newPaddockName = ""
+                        }
+                    }
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: 44
+                    radius: 8
+                    color: okPadMa.pressed ? theme.bannerHi : theme.accent
+                    Text {
+                        anchors.centerIn: parent
+                        text: qsTr("Create")
+                        color: theme.accentText
+                        font.bold: true
+                    }
+                    MouseArea {
+                        id: okPadMa
+                        anchors.fill: parent
+                        onClicked: paddockScreen.createPaddock(newPadField.text)
+                    }
+                }
+            }
+        }
+        onVisibleChanged: if (visible) { newPadField.text = ""; newPadField.forceActiveFocus() }
+    }
+
+    FarmDataImportPopup {
+        id: farmImport
+        phoneLayout: true
+        parent: paddockScreen
+        onImportFinished: paddockScreen.importFiles = farm.listImportFiles("")
     }
 }

@@ -8,6 +8,7 @@ import "Icons.js" as Icons
 Flickable {
     id: page
     signal navigate(string id)
+    signal openGuide()
 
     property string buildId: ""
 
@@ -35,7 +36,7 @@ Flickable {
 
     property var tiles: [
         { id: "paddock",title: qsTr("Paddock Setup"), glyph: Icons.farm,    desc: qsTr("Fields, boundaries, run lines, import") },
-        { id: "impl",   title: qsTr("Implement"),   glyph: Icons.implement, desc: qsTr("Width, sections, offset") },
+        { id: "impl",   title: qsTr("Implement"),   glyph: Icons.implement, desc: qsTr("Width, sections, connection type, receiver offset") },
         { id: "layout", title: qsTr("Layout"),      glyph: Icons.layout,    desc: qsTr("Pages, columns, elements") },
         { id: "conn",   title: qsTr("GPS / Source"), glyph: Icons.gps,      desc: qsTr("Connection and NMEA source") },
         { id: "gpsinfo",title: qsTr("GPS Information"), glyph: Icons.satellite, desc: qsTr("Fix, sats, HDOP, TCM, antenna height") },
@@ -58,6 +59,10 @@ Flickable {
                 Layout.fillWidth: true
                 Label { text: qsTr("Setup"); color: Style.accent; font.pixelSize: 22; font.bold: true }
                 Item { Layout.fillWidth: true }
+                Button {
+                    text: qsTr("How to use")
+                    onClicked: page.openGuide()
+                }
                 Button {
                     text: qsTr("Save Settings")
                     onClicked: app.saveSettings()

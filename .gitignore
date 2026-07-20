@@ -59,6 +59,9 @@ assets/farm/TASKDATA.XML
 *.prj
 *.zip
 
+# Standalone bridge build output (see PUFworks-isobus/scripts/build_gps_bridge_exe.ps1)
+dist/
+
 # IDE / OS
 .DS_Store
 *.swp
