@@ -26,12 +26,17 @@ class Theme : public QObject
     // Map "ground" fill behind the coverage swaths.
     Q_PROPERTY(QColor mapField READ mapField NOTIFY darkChanged)
 
+    Q_PROPERTY(bool userGuideSeen READ userGuideSeen NOTIFY userGuideSeenChanged)
+
 public:
     explicit Theme(QObject *parent = nullptr);
 
     bool dark() const { return m_dark; }
     void setDark(bool on);
     Q_INVOKABLE void toggle() { setDark(!m_dark); }
+
+    bool userGuideSeen() const { return m_userGuideSeen; }
+    Q_INVOKABLE void setUserGuideSeen(bool seen = true);
 
     QColor bg() const         { return m_dark ? QColor("#0e1714") : QColor("#f4f7f4"); }
     QColor banner() const     { return m_dark ? QColor("#0b1310") : QColor("#dfe8e2"); }
@@ -47,7 +52,9 @@ public:
 
 signals:
     void darkChanged();
+    void userGuideSeenChanged();
 
 private:
     bool m_dark = true; // default: dark
+    bool m_userGuideSeen = false;
 };

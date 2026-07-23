@@ -15,7 +15,7 @@ class QTimer;
 // stream the Wi-Fi bridge emits. This is a faithful 1:1 port of
 // PUFworks-isobus/scripts/gps_bridge_lib.py (the field-validated PGN map) so the
 // direct-plug USB-CAN path feeds GpsModel byte-identically to the bridge:
-//   PGN 0xFEF3  lat/lon   (int32 LE * 1e-7; lat offset -210 deg)
+//   PGN 0xFEF3  lat/lon   (uint32 LE * 1e-7; both axes offset -210 deg)
 //   PGN 0xFEE8  heading / speed / pitch / altitude (u16 LE)
 //   PGN 0xFEE6  roll      (bytes 2-3, u16 LE / 128 deg)
 //   PGN 0xFFFF  JD proprietary GNSS-quality multiplex; sub-msg 0x51 (sig

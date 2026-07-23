@@ -1,5 +1,59 @@
 # PUF-mobile
 
+```
+████  █   █ █████ █   █  ███  ████  █   █  ████   
+█░░░█ █░  █░█░░░░░█░  █░█ ░░█ █░░░█ █░ █ ░█ ░░░░  
+████░░█░░ █░████░░█░█ █░█░ ░█░████░░███ ░ ░███░░░ 
+█░░░░ █░░ █░█░░░░ ██░██░█░░ █░█░░█░ █░░█ ░  ░░█   
+█░░░░░ ███ ░█░░░░░█░░ █░░███ ░█░░░█░█░░░█ ████░░  
+ ░░     ░░░ ░░░    ░░░ ░░ ░░░ ░░░  ░ ░░  ░ ░░░░ ░ 
+  ░      ░░░  ░     ░   ░  ░░░  ░   ░ ░   ░ ░░░░  
+
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                              .=*****=. :@@=                                    
+                            .----.-%@@@@@#=@@@= .-                              
+                            .:=@@@@@@@@@@@@@@@@@.*@:                            
+                       *@@@@@@@@@@@@@@@@@@@@@@@@@=@@:                           
+                    *@@*+@@@@@@@@@@@@@@@@@@@@@@@@@@@@                           
+                    .=@@@@@@@@%++++++++#%@+%@@%#@@@@@.                          
+                   *- #@@@@*+*%@@@@@@@#++++++@@*%@@@@@@*:                       
+                    -@@@@++#@%*+++++++%@++++++@#*@@*+*@@@@@@+                   
+                   *@@@#++%++*%@@@@@@#++#+++++*%+@%++#@*++*@@*                  
+                  +@@@*++++#@@@%+-=%@@@%+++++++%+#+++*++*%%*@#                  
+                  @@@*++++@@@.        %@@++++++*++++++*@@@@@@#                  
+                 +@@%++++%@*           *@%+++++++++++*@#   .@@.                 
+                .%@@+++++@%   =@@#      @@+++++++++++@#     -@#                 
+             .=@@@@+.=+++@+ .@@@*  .    =@+++++++++++@.%@:  .@#                 
+         -@@@@@@%.   .+++@* =@@@@@@%    +@++++++*%%#+@@@@:+ .@#                 
+            -@@:-%.    -+@@.-@@@@@@*    @#+++*@#++++%@@@@@% -@+                 
+           :@@#@#    --+##@@:=@@@@%.   @%+++%+++++++++@@@@=:@%                  
+          .@@@@@.   .%++++++%@+.    .#@++++++++++++++++@@.+@@@@.                
+          .@@@@#    =+++@@#+++++#%%#++++++++++++%%*++++++@@*+#@+                
+          .@#*@% .  :+++++#@@%*++++++++++++++++*@@@@%++++++%@@#                 
+           : =@@#%.  .=+++++#@@#@@@@%#*++++++++++++++++++++++#@%.               
+              +@@@@:    .-+++++%@#. .:=#@@@@@@%#*++++++++++++++@@:              
+               :@@@@@-     .*+++++%@@#-   .....=%@@@@@%++++++++%@=              
+                 . .@@@@%:. .@%++++++*%@@#:...-=*##*%@@@@@@#+++@@-              
+                    #@@%.    :@@@@%*+++++++*%%%%%#*+++#@@@@@@@@@*               
+                    :@@@=     +@@@@@@@@@%#**+++++*#@@@*     .%#.                
+                     #@@@.     #@@@@@@@@@@@@@@@@@@*:                            
+                      %@@%     .%@@@@@@@@@@@@-                                  
+                      .@@@#      %@@@@@@@@@@@                                   
+                       #@@@=      #@@@@@@@@@@-                                  
+                        @@@@.      =@@@@@@@@@*                                  
+                         @@@%        %@@@@@@@%                                  
+                         .@@@#        .@@@@@@@=                                 
+                          -@@@+         :@@@@@%                                 
+                           #@@@:          .@@@@=                                
+                           .@@@%            +@@@:                               
+                            .@@@*            %@@%                               
+                             -@@@=           .@@@*                              
+```
+
 Field-ready GPS guidance for Android tablets and phones, built for the **PUFworks**
 spot-spraying program. Qt 5.15 LTS, heading-up map, coverage recording, farm/paddock
 setup, and John Deere StarFire / 616R position via a UDP NMEA bridge.
@@ -74,8 +128,9 @@ distribution pipeline.
 
 | Source | When to use |
 |---|---|
-| **UDP port 9999** | **Recommended for John Deere.** Run `bridge_to_tablet.ps1` on a
-  laptop/Pi with the CANable; tablet listens on UDP 9999. |
+| **UDP port 9999** | **Recommended for John Deere.** Run standalone
+  `dist\run_gps_bridge.bat` (or `bridge_to_tablet.ps1`) on a laptop with the
+  CANable; tablet listens on UDP 9999. |
 | **Internal serial** | Tablet built-in GNSS on `/dev/ttyS0` @ 115200 (e.g. BT-770 antenna). |
 | **Bluetooth GPS** | CAN→BT host (`bt_bridge.ps1` / `bt_gps_host.py`) or any SPP GPS. |
 | **Tablet GPS** | Android location services (no TCM attitude). |
@@ -84,12 +139,24 @@ distribution pipeline.
 John Deere path (recommended):
 
 ```
-CANable (slcan) → gps_bridge.py on laptop/Pi → UDP NMEA → tablet :9999
+CANable (slcan) → gps_bridge.exe on laptop → UDP NMEA → tablet :9999
 ```
+
+**Standalone exe (no Python):** double-click `dist\run_gps_bridge.bat`, or:
+
+```powershell
+# rebuild after decoder changes
+powershell -ExecutionPolicy Bypass -File C:\Projects\PUFworks-isobus\scripts\build_gps_bridge_exe.ps1
+
+# run (edit COM / tablet IP in the bat, or pass args)
+C:\Projects\PUF-mobile\dist\run_gps_bridge.bat COM2 192.168.1.59
+```
+
+Or via PowerShell (prefers the exe when present):
 
 ```powershell
 cd C:\Projects\PUF-mobile
-.\bridge_to_tablet.ps1 -TabletIp 192.168.1.50 -Com COM2
+.\bridge_to_tablet.ps1 -TabletIp 192.168.1.59 -Com COM2
 ```
 
 On tablet: **Setup → GPS → UDP port `9999` → Listen UDP**.
@@ -173,7 +240,7 @@ a `TASKDATA.XML`.
 **Import scan folder** (Setup → Paddock Setup → **Scan**):
 
 ```
-/storage/emulated/0/Download/QtAgGPS/
+/storage/emulated/0/Download/Farm_data/
 ```
 
 Copy `.kml` files or unzipped ISOXML **folders** here. Tap **Scan**, then **Import**
@@ -201,9 +268,9 @@ via in-app import, not by hand; `adb run-as` is for debug builds only.
 1. Export Task Data / fields from **Operations Center** or Gen4 (ISOXML / TaskData zip).
 2. **Unzip** on a PC or on the tablet (Files app → long-press zip → Extract).
 3. Copy the extracted folder (or standalone `.kml`) to the tablet:
-   - **Samsung (Android 11):** USB → `Internal storage/Download/QtAgGPS/`, or Wi-Fi
+   - **Samsung (Android 11):** USB → `Internal storage/Download/Farm_data/`, or Wi-Fi
      FTP via `scripts/upload_tablet_ftp.ps1`.
-   - **Allwinner (Android 6):** same `Download/QtAgGPS/` path; legacy external storage
+   - **Allwinner (Android 6):** same `Download/Farm_data/` path; legacy external storage
      is enabled (`requestLegacyExternalStorage`) so the app can read non-media files
      in Download without a document picker.
 4. In PUF-mobile: **Setup → Paddock Setup → Scan → Import** on the folder or KML row.

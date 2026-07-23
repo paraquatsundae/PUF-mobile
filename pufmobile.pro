@@ -23,7 +23,8 @@ HEADERS += \
     btgpssource.h \
     tabletgpssource.h \
     phoneplatform.h \
-    theme.h
+    theme.h \
+    basemapstore.h
 
 SOURCES += \
     main.cpp \
@@ -43,7 +44,8 @@ SOURCES += \
     btgpssource.cpp \
     tabletgpssource.cpp \
     phoneplatform.cpp \
-    theme.cpp
+    theme.cpp \
+    basemapstore.cpp
 
 RESOURCES += qml.qrc
 
@@ -75,3 +77,8 @@ ANDROID_MIN_SDK_VERSION = 23
 # (lets the app read non-media files like TASKDATA.XML in Download under scoped
 # storage). Raising to >= 30 would re-enable scoped storage and break KML import.
 ANDROID_TARGET_SDK_VERSION = 29
+
+# Qt Network HTTPS on Android needs bundled OpenSSL (not shipped with Qt).
+# Prebuilt libs: 3rdparty/android_openssl (KDAB). Without these, tile downloads
+# create empty folders and Nav never shows imagery.
+android: include($$PWD/3rdparty/android_openssl/openssl.pri)

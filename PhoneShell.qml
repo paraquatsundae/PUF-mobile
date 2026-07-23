@@ -16,7 +16,7 @@ Item {
 
     property string buildId: ""
 
-
+    property var openUserGuide: null
 
     CoverageRecorder { id: recorder }
 
@@ -190,9 +190,12 @@ Item {
 
         platform.refreshCellularGeneration()
 
-        if (!app.running && app.tabletGpsSupported)
-
-            app.startTabletGps()
+        if (!app.running) {
+            if (app.lastSource === "udp")
+                app.startUdp()
+            else if (app.tabletGpsSupported)
+                app.startTabletGps()
+        }
 
         workSync.refreshJobIndex()
 
@@ -345,7 +348,11 @@ Item {
 
             Layout.fillHeight: true
 
-            currentIndex: phone.showJobList ? 6
+            currentIndex: phone.showJobList ? 8
+
+                        : setupScreen === "maps" ? 7
+
+                        : setupScreen === "boundary" ? 6
 
                         : setupScreen === "width" ? 3
 
@@ -399,6 +406,12 @@ Item {
 
                 onOpenGps: phone.setupScreen = "gps"
 
+                onOpenBoundary: phone.setupScreen = "boundary"
+
+                onOpenMaps: phone.setupScreen = "maps"
+
+                onOpenGuide: if (phone.openUserGuide) phone.openUserGuide(false)
+
             }
 
             PhoneWidthScreen {
@@ -421,9 +434,19 @@ Item {
 
                 }
 
+                onRecordBoundaryRequested: phone.setupScreen = "boundary"
+
             }
 
             PhoneGpsScreen { onBack: phone.setupScreen = "" }
+
+            PhoneBoundaryScreen {
+                onBack: phone.setupScreen = ""
+            }
+
+            PhoneMapsScreen {
+                onBack: phone.setupScreen = ""
+            }
 
             PhoneJobListScreen {
 

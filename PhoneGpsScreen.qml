@@ -1,5 +1,6 @@
 import QtQuick 2.15
 import QtQuick.Layouts 1.15
+import QtQuick.Controls 2.15
 import "Style.js" as Style
 
 Item {
@@ -7,6 +8,7 @@ Item {
     signal back()
 
     readonly property bool phoneGpsSource: app.lastSource === "tablet"
+    property string expandedSource: app.lastSource === "udp" ? "udp" : ""
 
     function tierText() {
         if (gps.stale || !gps.hasFix) return qsTr("NO FIX")
@@ -23,7 +25,7 @@ Item {
         switch (id) {
         case "tablet": return qsTr("Phone GNSS")
         case "bt": return qsTr("Bluetooth GPS")
-        case "udp": return qsTr("UDP (StarFire bridge)")
+        case "udp": return qsTr("ISOBUS WiFi")
         case "can": return qsTr("USB-CAN (John Deere)")
         case "serial": return qsTr("Serial")
         case "internal": return qsTr("Internal GPS")
@@ -31,27 +33,33 @@ Item {
         }
     }
 
+    function hubDashboardUrl() {
+        var host = app.hubHost.trim()
+        if (!host.length) return ""
+        return "http://" + host + ":" + app.hubWebPort + "/"
+    }
+
+    function startUdpListen() {
+        var p = parseInt(udpPortField.text)
+        if (isNaN(p) || p < 1 || p > 65535)
+            p = 9999
+        app.udpPort = p
+        app.hubHost = hubHostField.text.trim()
+        app.saveSettings()
+        app.startUdp()
+    }
+
+    onVisibleChanged: if (!visible) app.saveSettings()
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
 
-        Rectangle {
+        PhoneSubScreenHeader {
             Layout.fillWidth: true
-            implicitHeight: 48
-            color: theme.banner
-            RowLayout {
-                anchors.fill: parent
-                anchors.margins: 8
-                Rectangle {
-                    implicitWidth: 80; implicitHeight: 36; radius: 6
-                    color: backMa.pressed ? theme.bannerHi : "transparent"
-                    border.color: theme.accent
-                    Text { anchors.centerIn: parent; text: "< SETUP"; color: theme.accent; font.bold: true }
-                    MouseArea { id: backMa; anchors.fill: parent; onClicked: gpsScreen.back() }
-                }
-                Text { text: qsTr("GPS"); color: theme.text; font.pixelSize: 18; font.bold: true }
-                Item { Layout.fillWidth: true }
-            }
+            backLabel: "< SETUP"
+            title: qsTr("GPS")
+            onBackClicked: gpsScreen.back()
         }
 
         Flickable {
@@ -187,8 +195,8 @@ Item {
                 Repeater {
                     model: [
                         { id: "tablet", enabled: app.tabletGpsSupported, soon: false },
+                        { id: "udp", enabled: true, soon: false },
                         { id: "bt", enabled: false, soon: true },
-                        { id: "udp", enabled: false, soon: true },
                         { id: "can", enabled: false, soon: true }
                     ]
 
@@ -198,8 +206,10 @@ Item {
                         radius: 8
                         color: rowMa.pressed && modelData.enabled ? theme.bannerHi : theme.panel
                         border.color: (app.running && app.lastSource === modelData.id)
+                                      || gpsScreen.expandedSource === modelData.id
                                       ? theme.accent : theme.panelEdge
-                        border.width: (app.running && app.lastSource === modelData.id) ? 2 : 1
+                        border.width: (app.running && app.lastSource === modelData.id)
+                                      || gpsScreen.expandedSource === modelData.id ? 2 : 1
                         opacity: modelData.enabled ? 1.0 : 0.55
 
                         RowLayout {
@@ -231,9 +241,155 @@ Item {
                             anchors.fill: parent
                             enabled: modelData.enabled
                             onClicked: {
-                                if (modelData.id === "tablet")
+                                if (modelData.id === "tablet") {
+                                    gpsScreen.expandedSource = ""
                                     app.startTabletGps()
+                                } else if (modelData.id === "udp") {
+                                    gpsScreen.expandedSource = "udp"
+                                }
                             }
+                        }
+                    }
+                }
+
+                // ---- ISOBUS WiFi / UDP listen ----
+                Rectangle {
+                    visible: gpsScreen.expandedSource === "udp"
+                    Layout.fillWidth: true
+                    radius: 8
+                    color: theme.panel
+                    border.color: theme.panelEdge
+                    implicitHeight: udpCol.implicitHeight + 24
+
+                    ColumnLayout {
+                        id: udpCol
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 12
+                        spacing: 10
+
+                        Text {
+                            text: qsTr("ISOBUS WiFi hub")
+                            color: theme.accent
+                            font.pixelSize: 15
+                            font.bold: true
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            Text {
+                                text: qsTr("UDP port")
+                                color: theme.textDim
+                                font.pixelSize: 14
+                                Layout.preferredWidth: 90
+                            }
+                            TextField {
+                                id: udpPortField
+                                Layout.fillWidth: true
+                                text: app.udpPort.toString()
+                                inputMethodHints: Qt.ImhDigitsOnly
+                                color: theme.text
+                                onEditingFinished: app.udpPort = parseInt(text)
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            Text {
+                                text: qsTr("Hub IP")
+                                color: theme.textDim
+                                font.pixelSize: 14
+                                Layout.preferredWidth: 90
+                            }
+                            TextField {
+                                id: hubHostField
+                                Layout.fillWidth: true
+                                text: app.hubHost
+                                placeholderText: qsTr("e.g. 192.168.4.1")
+                                color: theme.text
+                                onEditingFinished: app.hubHost = text.trim()
+                            }
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            visible: gpsScreen.hubDashboardUrl().length > 0
+                            text: qsTr("Hub dashboard: ") + gpsScreen.hubDashboardUrl()
+                            color: theme.textDim
+                            font.pixelSize: 12
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                implicitHeight: 44
+                                radius: 8
+                                color: listenMa.pressed ? theme.accent : theme.bannerHi
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: qsTr("Listen")
+                                    color: listenMa.pressed ? theme.accentText : theme.text
+                                    font.pixelSize: 15
+                                    font.bold: true
+                                }
+                                MouseArea {
+                                    id: listenMa
+                                    anchors.fill: parent
+                                    onClicked: gpsScreen.startUdpListen()
+                                }
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                implicitHeight: 44
+                                radius: 8
+                                color: stopMa.pressed ? theme.bannerHi : theme.panel
+                                border.color: theme.panelEdge
+                                opacity: app.running ? 1.0 : 0.55
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: qsTr("Stop")
+                                    color: theme.text
+                                    font.pixelSize: 15
+                                }
+                                MouseArea {
+                                    id: stopMa
+                                    anchors.fill: parent
+                                    enabled: app.running
+                                    onClicked: app.stop()
+                                }
+                            }
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: qsTr("Status: ") + app.sourceStatus
+                            color: app.connected ? theme.accent : theme.textDim
+                            font.pixelSize: 13
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: qsTr("This phone: ") + app.localAddresses
+                            color: theme.textDim
+                            font.pixelSize: 12
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: qsTr("Run IsobusWifiHub on the laptop. Point hub unicast_client at this phone IP and UDP port. NMEA ($PANDA / $GPGGA) arrives here.")
+                            color: theme.textDim
+                            font.pixelSize: 12
                         }
                     }
                 }
@@ -241,7 +397,7 @@ Item {
                 Text {
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
-                    text: qsTr("Phone GNSS uses the device built-in receiver. External sources (Bluetooth, Wi-Fi bridge, UDP) will be selectable in a future update.")
+                    text: qsTr("Phone GNSS uses the built-in receiver. ISOBUS WiFi listens for NMEA from the cab hub. Bluetooth and USB-CAN are coming in a future update.")
                     color: theme.textDim
                     font.pixelSize: 12
                 }
@@ -249,4 +405,3 @@ Item {
         }
     }
 }
-

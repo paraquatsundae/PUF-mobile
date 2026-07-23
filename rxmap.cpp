@@ -55,11 +55,11 @@ void RxMap::clear()
 
 QString RxMap::defaultFolder() const
 {
-    // Mirror FarmStore::defaultImportFolder() — shared Download/QtAgGPS on Android.
+    // Mirror FarmStore::defaultImportFolder() — shared Download/Farm_data on Android.
 #ifdef Q_OS_ANDROID
-    return QStringLiteral("/storage/emulated/0/Download/QtAgGPS");
+    return QStringLiteral("/storage/emulated/0/Download/Farm_data");
 #else
-    return QDir::homePath() + QStringLiteral("/QtAgGPS");
+    return QDir::homePath() + QStringLiteral("/Farm_data");
 #endif
 }
 

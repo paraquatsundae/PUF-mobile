@@ -93,7 +93,7 @@ Popup {
                     color: rx.loaded ? Style.accent : Style.textDim; font.pixelSize: 12
                     text: rx.loaded
                           ? (rx.zoneCount + qsTr(" zones \u2022 ") + rx.crsNote)
-                          : qsTr("No shapefile selected. Place Rx exports in Download/QtAgGPS.")
+                          : qsTr("No shapefile selected. Place Rx exports in Download/Farm_data.")
                 }
                 Button { text: qsTr("Refresh")
                          onClicked: fileList.model = rx.listShapefiles(rx.defaultFolder()) }

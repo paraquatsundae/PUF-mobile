@@ -16,6 +16,13 @@ GpsModel::GpsModel(QObject *parent) : QObject(parent)
     m_emitTimer = new QTimer(this);
     m_emitTimer->setSingleShot(true);
     connect(m_emitTimer, &QTimer::timeout, this, &GpsModel::emitFixNow);
+
+    // JD bridge sends GGA+RMC+VTG+PANDA in one UDP datagram. Defer the ENU filter
+    // to the next event-loop turn so PANDA's TCM heading/quality win, and so we
+    // only take one filter step per fix (not four with tiny dt).
+    m_filterTimer = new QTimer(this);
+    m_filterTimer->setSingleShot(true);
+    connect(m_filterTimer, &QTimer::timeout, this, &GpsModel::runScheduledFilter);
 }
 
 GpsModel::~GpsModel()
@@ -126,14 +133,28 @@ void GpsModel::feed(const QString &lineIn)
         // filter — that is what the offline tuning harness needs.
         if (m_rawLog)
             logRawFix();
-        // The very first valid fix flips hasOrigin true. That transition drives
-        // the field boundary / AB / whole-paddock bindings, so it must reach QML
-        // immediately and never be swallowed inside the ~10 Hz coalescer window.
-        if (updateLocal())
-            emitFixNow();
-        else
-            noteFixChanged();
+        scheduleFilterUpdate();
     }
+}
+
+void GpsModel::scheduleFilterUpdate()
+{
+    m_filterPending = true;
+    if (!m_filterTimer->isActive())
+        m_filterTimer->start(0);
+}
+
+void GpsModel::runScheduledFilter()
+{
+    if (!m_filterPending)
+        return;
+    m_filterPending = false;
+    // First valid fix flips hasOrigin — deliver immediately (un-coalesced) so
+    // boundary / AB / paddock bindings see the transition in the same tick.
+    if (updateLocal())
+        emitFixNow();
+    else
+        noteFixChanged();
 }
 
 void GpsModel::noteFixChanged()
@@ -163,6 +184,12 @@ bool GpsModel::updateLocal()
 {
     if (m_fixQuality <= 0)
         return false;
+    // Never seed the local frame from (0,0) / empty NMEA — that put paddocks
+    // off-screen (_maxLocalM clamp) when JD GPS connected before a real fix.
+    if (!std::isfinite(m_lat) || !std::isfinite(m_lon)
+        || m_lat < -90.0 || m_lat > 90.0 || m_lon < -180.0 || m_lon > 180.0
+        || (std::fabs(m_lat) < 1e-7 && std::fabs(m_lon) < 1e-7))
+        return false;
     bool originSet = false;
     if (!m_haveOrigin) {
         m_lat0 = m_lat;
@@ -186,8 +213,8 @@ bool GpsModel::updateLocal()
         dt = m_filterClock.elapsed() / 1000.0;
     m_filterClock.restart();
     const gpsfilter::Tier tier = gpsfilter::tierFor(m_fixQuality, m_hdop, m_hdopValid);
-    // Only a true (HDT/dual-antenna) heading is authoritative; course-over-ground
-    // is derived from the track instead, so pass -1 unless we saw an HDT sentence.
+    // Authoritative heading: $HDT or JD TCM yaw on $PANDA. Otherwise the filter
+    // derives course from the smoothed track (noisy at RTK centimetre scale).
     const double trueHeading = m_haveTrueHeading ? m_heading : -1.0;
     const gpsfilter::GpsFilter::Output o =
         m_filter.update(rawX, rawY, m_speedKmh, dt, tier, m_implementWidth, trueHeading);
@@ -428,19 +455,28 @@ bool GpsModel::parsePANDA(const QStringList &f)
     m_alt = f.at(9).toDouble();
     if (f.size() > 11 && !f.at(11).isEmpty())
         m_speedKmh = f.at(11).toDouble(); // AgOpenGPS PANDA speed (km/h)
-    if (f.size() > 12 && !f.at(12).isEmpty())
-        m_heading = f.at(12).toDouble();
-    // TCM attitude: roll (13), pitch (14), yaw rate (15). Used for terrain
-    // compensation of the recording point (see FieldView / antenna height).
-    if (f.size() > 13 && !f.at(13).isEmpty()) {
+    // TCM attitude fields (roll/pitch/yaw) — parsed for the GPS info page.
+    // Terrain-comp into coverage is PARKED in RecordPoint.js (FEE6 roll bogus;
+    // FEE8 pitch has a large constant bias). hasAttitude stays false so coverage
+    // never pitch-only-shifts.
+    if (f.size() > 13 && !f.at(13).isEmpty())
         m_roll = f.at(13).toDouble();
-        m_haveAttitude = true;
-    }
-    if (f.size() > 14 && !f.at(14).isEmpty()) {
+    if (f.size() > 14 && !f.at(14).isEmpty())
         m_pitch = f.at(14).toDouble();
-        m_haveAttitude = true;
-    }
     if (f.size() > 15 && !f.at(15).isEmpty())
         m_yawRate = f.at(15).toDouble();
+    if (f.size() > 12 && !f.at(12).isEmpty()) {
+        m_heading = f.at(12).toDouble();
+        // True heading ONLY when TCM attitude accompanies the sentence (JD
+        // StarFire FEE8 via the bridge). Tablet GPS also emits $PANDA with
+        // Android Location.bearing but no roll/pitch — that bearing is often
+        // stale/wrong when slow and must NOT lock haveTrueHeading (filter then
+        // skips track-derived heading → wild boom swings).
+        const bool hasTcm = (f.size() > 13 && !f.at(13).isEmpty())
+                         || (f.size() > 14 && !f.at(14).isEmpty())
+                         || (f.size() > 15 && !f.at(15).isEmpty());
+        // Clear as well as set — switching JD → tablet must drop the lock.
+        m_haveTrueHeading = hasTcm;
+    }
     return true;
 }

@@ -1,13 +1,11 @@
 # Streams John Deere 616R GPS/TCM from a CANable (slcan) into the PUF-mobile tablet
 # app over UDP as NMEA ($GPGGA / $GPRMC / $GPVTG).
 #
-# Run this on a Windows laptop (or adapt for a Pi) that has the CANable plugged in
-# and on the SAME Wi-Fi/LAN as the tablet. It reuses the field-validated PUFworks
-# decoder (PUFworks-isobus/scripts/gps_bridge.py) - the exact PGN map proven on this
-# 616R - so it sidesteps the tablet's USB-host limitation entirely.
+# Prefers a standalone exe (no Python install) when present:
+#   dist\gps_bridge.exe  (this repo)  or  ..\PUFworks-isobus\dist\gps_bridge.exe
+# Falls back to python gps_bridge.py otherwise.
 #
 # On the tablet (PUF-mobile): Setup -> GPS -> UDP, set port 9999, Listen UDP.
-# Status should read "Receiving on UDP 9999" and the map should come alive.
 #
 # Examples:
 #   .\bridge_to_tablet.ps1 -TabletIp 192.168.1.50 -Com COM2
@@ -22,11 +20,39 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-# PUF-mobile lives at C:\Projects\PUF-mobile; PUFworks-isobus is a sibling under C:\Projects.
-$bridge = Join-Path $PSScriptRoot '..\PUFworks-isobus\scripts\gps_bridge.py'
-if (-not (Test-Path $bridge)) { throw "gps_bridge.py not found at $bridge" }
-$bridge = (Resolve-Path $bridge).Path
+
+$candidates = @(
+    (Join-Path $PSScriptRoot 'dist\gps_bridge.exe'),
+    (Join-Path $PSScriptRoot '..\PUFworks-isobus\dist\gps_bridge.exe'),
+    (Join-Path $PSScriptRoot '..\PUFworks-isobus\scripts\gps_bridge.py')
+)
+
+$bridge = $null
+foreach ($c in $candidates) {
+    if (Test-Path $c) {
+        $bridge = (Resolve-Path $c).Path
+        break
+    }
+}
+if (-not $bridge) {
+    throw "gps_bridge not found. Build with: PUFworks-isobus\scripts\build_gps_bridge_exe.ps1"
+}
+
+$bridgeArgs = @(
+    '--interface', $Com,
+    '--bitrate', "$CanBitrate",
+    '--tty-baud', "$TtyBaud",
+    '--latlon-mode', 'jd_atx',
+    '--nmea-udp', "${TabletIp}:${Port}"
+)
 
 Write-Host "Bridging $Com (CAN $CanBitrate bps, tty $TtyBaud) -> ${TabletIp}:${Port} as NMEA/UDP" -ForegroundColor Cyan
-Write-Host "Ctrl+C to stop. (Needs: pip install python-can)" -ForegroundColor DarkGray
-python $bridge --interface $Com --bitrate $CanBitrate --tty-baud $TtyBaud --nmea-udp "${TabletIp}:${Port}"
+if ($bridge -like '*.exe') {
+    Write-Host "Using standalone: $bridge" -ForegroundColor DarkGray
+    Write-Host "Ctrl+C to stop." -ForegroundColor DarkGray
+    & $bridge @bridgeArgs
+} else {
+    Write-Host "Using Python: $bridge" -ForegroundColor DarkGray
+    Write-Host "Ctrl+C to stop. (Needs: pip install python-can)" -ForegroundColor DarkGray
+    python $bridge @bridgeArgs
+}

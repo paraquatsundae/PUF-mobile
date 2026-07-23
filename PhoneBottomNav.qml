@@ -12,8 +12,8 @@ Rectangle {
 
     signal tabSelected(string tab)
 
-    // Fixed 48 px tab row — gesture inset is painted by PhoneShell, not here.
-    readonly property int barHeight: 48
+    // Compact tab row — gesture inset is painted by PhoneShell, not here.
+    readonly property int barHeight: 44
 
     implicitHeight: barHeight
     Layout.preferredHeight: barHeight
@@ -27,7 +27,7 @@ Rectangle {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        height: 48
+        height: root.barHeight
 
         Repeater {
 

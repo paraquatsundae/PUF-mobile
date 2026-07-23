@@ -7,6 +7,7 @@
 #include <QXmlStreamReader>
 #include <QXmlStreamWriter>
 #include <QtMath>
+#include <QDebug>
 
 namespace {
 
@@ -156,9 +157,18 @@ bool TaskData::save(const QString &path, const QVector<Client> &clients)
     QFileInfo fi(path);
     QDir().mkpath(fi.absolutePath());
 
+    if (QFile::exists(path) && !fi.isWritable()) {
+        QFile::setPermissions(path,
+                              QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                  | QFileDevice::ReadUser | QFileDevice::WriteUser);
+    }
+
     QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+        qWarning("[taskdata] cannot write %s: %s",
+                 qUtf8Printable(path), qUtf8Printable(file.errorString()));
         return false;
+    }
 
     QXmlStreamWriter xml(&file);
     xml.setAutoFormatting(true);

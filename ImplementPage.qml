@@ -229,54 +229,33 @@ Flickable {
             }
         }
 
-        // Offset (recording point set-back behind the tractor)
+        // Connection type + distance from GPS receiver to record point
         Rectangle {
             Layout.fillWidth: true
             radius: 8
             color: Style.panel
             border.color: Style.panelEdge
             border.width: 1
-            implicitHeight: offCol.implicitHeight + 28
+            implicitHeight: attachCol.implicitHeight + 28
 
             ColumnLayout {
-                id: offCol
+                id: attachCol
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: parent.top
                 anchors.margins: 14
                 spacing: 12
 
-                Label { text: qsTr("Distance behind tractor (recording point)")
-                        color: Style.textDim; font.pixelSize: 14 }
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 16
-                    Button {
-                        text: Icons.minus; font.family: Icons.family; font.pixelSize: 26
-                        implicitWidth: 64; implicitHeight: 64
-                        onClicked: app.implementOffset = app.implementOffset - 0.5
-                        autoRepeat: true
-                    }
-                    Label {
-                        Layout.fillWidth: true
-                        horizontalAlignment: Text.AlignHCenter
-                        text: app.implementOffset.toFixed(1) + " m"
-                        color: Style.white; font.pixelSize: 40; font.bold: true
-                    }
-                    Button {
-                        text: Icons.plus; font.family: Icons.family; font.pixelSize: 26
-                        implicitWidth: 64; implicitHeight: 64
-                        onClicked: app.implementOffset = app.implementOffset + 0.5
-                        autoRepeat: true
-                    }
+                Label {
+                    text: qsTr("Connection type & receiver offset")
+                    color: Style.textDim
+                    font.pixelSize: 14
                 }
 
-                Slider {
+                RecordAttachmentPanel {
                     Layout.fillWidth: true
-                    from: 0.0; to: 12.0; stepSize: 0.5
-                    value: app.implementOffset
-                    onMoved: app.implementOffset = value
+                    large: true
+                    useTabletStyle: true
                 }
             }
         }
@@ -349,9 +328,9 @@ Flickable {
             wrapMode: Text.WordWrap
             color: Style.textDim
             font.pixelSize: 13
-            text: qsTr("Coverage is recorded at the implement (set back behind the tractor) "
-                       + "while Record is on. Section control shuts off sections that pass "
-                       + "over already-covered ground, so area stays true (no overlap).")
+            text: qsTr("Coverage records at the point set by connection type above "
+                       + "(ute = at receiver; 3PL / drawbar = offset behind receiver). "
+                       + "Section control shuts off sections that pass over already-covered ground.")
         }
     }
 }

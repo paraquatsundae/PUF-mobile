@@ -1,7 +1,9 @@
 import QtQuick 2.15
+import QtQuick.Window 2.15
 import QtQuick.Shapes 1.15
 import "Style.js" as Style
 import "Icons.js" as Icons
+import "RecordPoint.js" as RecordPoint
 
 // Heading-up field view. Tractor locked centre pointing up; ground + coverage
 // pan/rotate underneath. Coverage is recorded per-section at the implement
@@ -36,16 +38,22 @@ Item {
     property string _dbgEnsure: "(not run)"
     // Default framing: at userZoom 1 the bottom edge sits ~80 m behind the
     // implement. Derived from the live screen size so it fits any tablet.
-    readonly property real _frameMetres: app.implementOffset + 80
+    readonly property real _frameMetres: app.recordOffsetM + 80
     readonly property real _framePx: Math.max(40, height - cy)
     readonly property real _baseScale: _framePx / Math.max(20, _frameMetres)
+    // Chase default = five zoom-in taps (×1.2 each). Closer framing fills the
+    // tilted view with near tiles so the skyline gap is less obvious.
+    readonly property real _chaseDefaultZoom: Math.pow(1.2, 5)
 
     Behavior on tilt { NumberAnimation { duration: 350; easing.type: Easing.InOutQuad } }
     Behavior on userZoom {
         enabled: !pinchArea.pinch.active     // crisp during pinch; smooth on +/- taps
         NumberAnimation { duration: 120; easing.type: Easing.OutQuad }
     }
-    onModeChanged: { userZoom = 1.0; panX = 0; panY = 0; following = true }
+    onModeChanged: {
+        userZoom = (mode === 1) ? _chaseDefaultZoom : 1.0
+        panX = 0; panY = 0; following = true
+    }
 
     readonly property real cx: width / 2
     readonly property real cy: height * (mode === 1 ? 0.74 : 0.5)
@@ -213,29 +221,38 @@ Item {
     function cyclePerspective() { mode = (mode + 1) % 3 }
     function zoomIn()  { userZoom = Math.min(80.0, userZoom * 1.2) }
     function zoomOut() { userZoom = Math.max(0.03, userZoom / 1.2) }
-    function recenter() { userZoom = 1.0; panX = 0; panY = 0; following = true }
+    function recenter() {
+        userZoom = (mode === 1) ? _chaseDefaultZoom : 1.0
+        panX = 0; panY = 0; following = true
+    }
     function compass(deg) {
         var dirs = ["N","NE","E","SE","S","SW","W","NW"];
         return dirs[Math.round((deg % 360) / 45) % 8];
     }
 
     // ---- Coverage (per section) ----
-    // Frozen chunks are triangulated once and never touched again; only the
-    // small active chunk per section is re-evaluated each fix. This keeps the
-    // per-fix render cost flat regardless of how much has been covered.
+    // Geometry is stored as frozen chunks + one active chunk per section. Both
+    // are painted as cheap rotated rects (never Shape/PathPolyline) — thick
+    // PathPolyline tessellation on Adreno/Mali wedged the UI after a few minutes
+    // of Record Coverage on the Samsung cab tablets.
     property var doneStrokes: []    // frozen chunks {w, pts}; mutated in place (push)
     property int doneCount: 0
     property var activeStrokes: []  // per-section growing chunk {w, pts} or null
     property var sectionOn: []      // bool per section (bar state)
     property int activeVersion: 0
-    // Paint refresh is throttled separately so GPS fixes can mark cells without
-    // retessellating PathPolyline/Shape on the Mali-400 every fix (UI wedge).
+    // Paint refresh is throttled so GPS fixes can mark cells without rebuilding
+    // every visible rect segment on every fix.
     property int _paintVersion: 0
     property real _lastRx: NaN
     property real _lastRy: NaN
+    // Slew-limited heading for coverage/boom geometry (UI may use gps.headingDeg).
+    property real _covHdg: NaN
+    // Last marked section centres (east/north) — markAlong fills GPS gaps.
+    property var _lastSecE: []
+    property var _lastSecN: []
     property var _replayMarks: []
     property int _replayMarkIdx: 0
-    readonly property int _chunkMax: 150
+    readonly property int _chunkMax: 400
     // Identity of the job currently loaded into the coverage layer, so it can be
     // saved (under the right field) when the field is switched or work stops.
     property var _jobId: ({ fieldId: "", fieldName: "", farmId: "", farmName: "",
@@ -277,8 +294,11 @@ Item {
             var b = field._chunkBbox(st.pts, st.w || 0);
             st.bbox = b;
             coverage.addChunkBox(b.minx, b.miny, b.maxx, b.maxy);
-            field.doneStrokes.push(st);
-            field.doneCount++;
+            // Reassign — in-place push is lost on Android QML engines (SM-T545).
+            var ds = field.doneStrokes.slice();
+            ds.push(st);
+            field.doneStrokes = ds;
+            field.doneCount = ds.length;
         }
     }
     function _freezeAllActive() {
@@ -287,34 +307,64 @@ Item {
         field.activeVersion++;
         field._paintVersion = field.activeVersion;
     }
+    function _commitActive() {
+        field.activeStrokes = field.activeStrokes.slice();
+        field.activeVersion++;
+    }
 
-    // Mali-safe stroke tessellation (same approach as PhoneMapView._covPaintSegs).
-    function _appendWorldStrokeSegs(st, out, maxN) {
-        if (!st || !st.pts || st.pts.length < 1 || out.length >= maxN)
+    // Mali-safe: one square boom-bar per sample pair. Heavy tip-envelope
+    // subdivision spawned thousands of QML rects → lag and mid-run paint starve.
+    function _hdgDelta(a, b) {
+        var d = b - a;
+        while (d > 180) d -= 360;
+        while (d < -180) d += 360;
+        return d;
+    }
+    function _ptHdg(p, fallback) {
+        if (p && typeof p.h === "number" && isFinite(p.h))
+            return p.h;
+        return fallback;
+    }
+    function _appendWorldStrokeSegs(st, out, budgetN) {
+        if (!st || !st.pts || st.pts.length < 2 || budgetN < 1)
             return;
         var halfW = Math.max(0.25, (st.w || app.implementWidth) * 0.5);
+        var band = halfW * 2;
+        var overlap = 0.18;
         var pts = st.pts;
-        var step = pts.length > 120 ? Math.ceil(pts.length / 120) : 1;
-        for (var j = 0; j < pts.length; j += step) {
-            if (out.length >= maxN)
-                break;
-            var p = pts[j];
-            out.push({ x: p.x, y: p.y, w: halfW * 2, h: halfW * 2, rot: 0 });
-        }
-        for (var k = 0; k < pts.length - 1; k += step) {
-            if (out.length >= maxN)
-                break;
-            var p0 = pts[k], p1 = pts[k + 1];
+        var startLen = out.length;
+        var limit = startLen + budgetN;
+        // Decimate long frozen trails so paint stays O(visible), not O(all pts).
+        var stride = 1;
+        if (pts.length > 120)
+            stride = 2;
+        if (pts.length > 240)
+            stride = 3;
+        for (var k = 0; k < pts.length - 1; k += stride) {
+            if (out.length >= limit)
+                return;
+            var p0 = pts[k];
+            var p1 = pts[Math.min(k + stride, pts.length - 1)];
             var dx = p1.x - p0.x, dy = p1.y - p0.y;
-            var len = Math.sqrt(dx * dx + dy * dy);
-            if (len < 0.05)
+            var chord = Math.sqrt(dx * dx + dy * dy);
+            if (chord < 0.02)
                 continue;
+            var fall = Math.atan2(dx, -dy) * 180 / Math.PI;
+            if (fall < 0) fall += 360;
+            var hm = field._ptHdg(p0, fall);
+            var h1 = field._ptHdg(p1, fall);
+            hm = hm + field._hdgDelta(hm, h1) * 0.5;
+            var hr = hm * Math.PI / 180;
+            var fx = Math.sin(hr), fy = -Math.cos(hr);
+            var along = dx * fx + dy * fy;
+            if (Math.abs(along) < 0.04)
+                along = chord;
             out.push({
                 x: (p0.x + p1.x) * 0.5,
                 y: (p0.y + p1.y) * 0.5,
-                w: len + halfW * 2,
-                h: halfW * 2,
-                rot: Math.atan2(dy, dx) * 180 / Math.PI
+                w: Math.abs(along) + overlap * 2,
+                h: band,
+                rot: Math.atan2(fy, fx) * 180 / Math.PI
             });
         }
     }
@@ -324,6 +374,7 @@ Item {
             return out;
         for (var i = 0; i < field.activeStrokes.length; ++i) {
             var st = field.activeStrokes[i];
+            // Need ≥2 pts for a ribbon (freeze now keeps 2; no lone-circle paint).
             if (st && st.pts && st.pts.length >= 2)
                 out.push(st);
         }
@@ -331,19 +382,40 @@ Item {
     }
     readonly property var _activePaintSegs: {
         var strokes = field._strokesForActivePaint();
-        var _dep = [field._paintVersion, strokes.length].join("|");
+        var _dep = [field._paintVersion, field.activeVersion, strokes.length].join("|");
         var out = [];
-        var maxSeg = 240;
-        for (var i = 0; i < strokes.length && out.length < maxSeg; ++i)
-            field._appendWorldStrokeSegs(strokes[i], out, maxSeg);
+        // Fair budget: old maxSeg=240 let section 0 alone consume the whole pool
+        // → only one section's trail painted ("1 section recording").
+        var n = Math.max(1, strokes.length);
+        var per = Math.max(40, Math.floor(900 / n));
+        for (var i = 0; i < strokes.length; ++i)
+            field._appendWorldStrokeSegs(strokes[i], out, per);
+        return out;
+    }
+    // Viewport-culled frozen chunks → bounded rect segments (no PathPolyline).
+    readonly property var _frozenPaintSegs: {
+        var idxs = field._visChunks;
+        var _dep = [field.doneCount, field._paintVersion,
+                    field._covMinX, field._covMinY,
+                    field._covMaxX, field._covMaxY,
+                    idxs ? idxs.length : 0].join("|");
+        var out = [];
+        if (!idxs || !idxs.length)
+            return out;
+        var n = Math.max(1, idxs.length);
+        var per = Math.max(50, Math.floor(1800 / n));
+        for (var i = 0; i < idxs.length; ++i)
+            field._appendWorldStrokeSegs(field.doneStrokes[idxs[i]], out, per);
         return out;
     }
 
     Timer {
         id: paintCoalesce
-        interval: 250
+        interval: 180
         repeat: false
-        onTriggered: { field._paintVersion = field.activeVersion; }
+        // Always bump — assigning activeVersion is a no-op when only cells changed
+        // (replay / mark-only), so cell paint would never refresh.
+        onTriggered: { field._paintVersion = field._paintVersion + 1; }
     }
     Timer {
         id: coverageReplayTimer
@@ -369,6 +441,12 @@ Item {
             field.doneStrokes = []; field.doneCount = 0;
             field.activeStrokes = []; field.sectionOn = [];
             field.activeVersion++;
+            field._paintVersion = field.activeVersion;
+        }
+        function onChanged() {
+            // Cell-span paint depends on coverage.cellCount / areaHa — coalesce.
+            if (!paintCoalesce.running)
+                paintCoalesce.start();
         }
     }
 
@@ -387,9 +465,15 @@ Item {
                     field._lastRx = NaN;
                     field._lastRy = NaN;
                 }
+                field._covHdg = gps.headingDeg;
+                field._lastSecE = [];
+                field._lastSecN = [];
             } else {
                 field._lastRx = NaN;
                 field._lastRy = NaN;
+                field._covHdg = NaN;
+                field._lastSecE = [];
+                field._lastSecN = [];
                 field._freezeAllActive();       // close open chunks; lift implement
                 field.sectionOn = [];
                 // Persist off the hot path — GeoJSON serialisation can block the UI
@@ -455,37 +539,11 @@ Item {
         }
     }
 
-    // Tilt-corrected, set-back implement recording point in world metres
-    // (x=east, y=north). Two corrections vs the raw antenna position:
-    //   1) TCM terrain compensation — the GPS antenna rides high on the machine,
-    //      so when it tilts the antenna shifts off the true ground point under it.
-    //      Project it back down using roll/pitch and the antenna height:
-    //      lateral ≈ h·sin(roll), longitudinal ≈ h·sin(pitch), rotated by heading.
-    //   2) Implement set-back — the boom records implementOffset metres behind the
-    //      tractor (aligned with the boom bar drawn behind the machine).
-    // The map keeps the antenna at screen centre; only this recorded point moves.
+    // Set-back implement recording point (east, north). Terrain-comp (roll/pitch)
+    // is parked in RecordPoint.js — see DEV_NOTES TCM section. Map keeps the
+    // antenna at screen centre; the boom draws at this set-back point.
     function _recordPoint() {
-        var hr = gps.headingDeg * Math.PI / 180;
-        var sinH = Math.sin(hr), cosH = Math.cos(hr);
-        var gx = gps.localX, gy = gps.localY;
-        var h = app.antennaHeight;
-        if (gps.hasAttitude && h > 0.01) {
-            // Clamp to a sane envelope so a bad TCM decode can't fling the point.
-            var roll = Math.max(-30, Math.min(30, gps.rollDeg)) * Math.PI / 180;
-            var pitch = Math.max(-30, Math.min(30, gps.pitchDeg)) * Math.PI / 180;
-            var latOff = h * Math.sin(roll);   // antenna right of the ground point
-            var lonOff = h * Math.sin(pitch);  // antenna ahead of the ground point
-            // right (east,north) = (cosH, -sinH); forward (east,north) = (sinH, cosH)
-            gx -= latOff * cosH + lonOff * sinH;
-            gy -= latOff * (-sinH) + lonOff * cosH;
-        }
-        var off = app.implementOffset;
-        var px = gx - off * sinH, py = gy - off * cosH;
-        // A non-finite result (bad heading/attitude decode) must never reach the
-        // coverage grid or a stroke point array — signal "no point" instead.
-        if (!isFinite(px) || !isFinite(py))
-            return null;
-        return { x: px, y: py };
+        return RecordPoint.recordLocal(gps, app);
     }
 
     // ---- Job coverage persistence (re-enterable work) ----
@@ -540,7 +598,7 @@ Item {
             var cs = ft.geometry.coordinates;
             if (!cs || !cs.length)
                 continue;
-            var pts = [], locals = [];
+            var locals = [];
             for (var j = 0; j < cs.length; ++j) {
                 var c = cs[j];
                 if (!c || c.length < 2)
@@ -552,11 +610,20 @@ Item {
                 // origin so an enormous polyline never reaches the GL ES2 backend.
                 if (Math.abs(p.x) > field._maxLocalM || Math.abs(p.y) > field._maxLocalM)
                     continue;
-                pts.push(Qt.point(p.x, -p.y));
                 locals.push(p);
             }
-            if (pts.length < 2)
+            if (locals.length < 2)
                 continue;
+            var pts = [];
+            for (var j2 = 0; j2 < locals.length; ++j2) {
+                var a0 = locals[j2];
+                var a1 = locals[Math.min(j2 + 1, locals.length - 1)];
+                var de0 = a1.x - a0.x, dn0 = a1.y - a0.y;
+                var hdg0 = (de0 === 0 && dn0 === 0) ? gps.headingDeg
+                                                    : Math.atan2(de0, dn0) * 180 / Math.PI;
+                if (hdg0 < 0) hdg0 += 360;
+                pts.push({ x: a0.x, y: -a0.y, h: hdg0 });
+            }
             var bb = field._chunkBbox(pts, w);
             var tr = (ft.properties && ft.properties.target_rate) ? ft.properties.target_rate : undefined;
             var tu = (ft.properties && ft.properties.rate_unit) ? ft.properties.rate_unit : undefined;
@@ -566,11 +633,7 @@ Item {
             // job blocks the UI thread and looks like a record-start freeze.
             for (var k = 0; k < locals.length; ++k) {
                 var a = locals[k];
-                var b = locals[Math.min(k + 1, locals.length - 1)];
-                var de = b.x - a.x, dn = b.y - a.y;
-                var hdg = (de === 0 && dn === 0) ? gps.headingDeg
-                                                 : Math.atan2(de, dn) * 180 / Math.PI;
-                marks.push({ x: a.x, y: a.y, hdg: hdg, w: w });
+                marks.push({ x: a.x, y: a.y, hdg: pts[k].h, w: w });
             }
         }
         field.doneStrokes = done;
@@ -594,7 +657,7 @@ Item {
             trackName: app.trackName,
             areaHa: coverage.areaHa,
             implementWidthM: app.implementWidth,
-            implementOffsetM: app.implementOffset,
+            implementOffsetM: app.recordOffsetM,
             antennaHeightM: app.antennaHeight,
             originLat: gps.originLat(), originLon: gps.originLon(),
             source: app.activeSource
@@ -679,6 +742,39 @@ Item {
         }
     }
 
+    // Approximate great-circle distance (m) — used to detect a wrong hemisphere /
+    // latlon-mode mismatch when JD GPS connects far from the paddock ring.
+    function _haversineM(lat1, lon1, lat2, lon2) {
+        var R = 6371000.0
+        var p1 = lat1 * Math.PI / 180, p2 = lat2 * Math.PI / 180
+        var dLat = (lat2 - lat1) * Math.PI / 180
+        var dLon = (lon2 - lon1) * Math.PI / 180
+        var a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+              + Math.cos(p1) * Math.cos(p2) * Math.sin(dLon / 2) * Math.sin(dLon / 2)
+        return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+    }
+
+    // If a live JD fix is many km from the active paddock, re-pin the local frame
+    // to the boundary centroid so the ring is on-screen again. Does not rewrite
+    // GPS — if the fix itself is wrong (bad latlon-mode), tractor will still sit
+    // far away; check IsobusWifiHub / gps_bridge uses jd_atx (not j1939).
+    function _healOriginIfGpsFarFromPaddock() {
+        if (!gps.hasFix || !field._validLatLon(gps.latitude, gps.longitude))
+            return
+        var c = field._boundaryCentroid()
+        if (!c)
+            return
+        var d = field._haversineM(gps.latitude, gps.longitude, c.lat, c.lon)
+        if (d < 5000)
+            return
+        if (!gps.hasOrigin || !field._validLatLon(gps.originLat(), gps.originLon())
+                || field._haversineM(gps.originLat(), gps.originLon(), c.lat, c.lon) > 2500) {
+            gps.setOrigin(c.lat, c.lon)
+            if (field._dbgOn)
+                field._dbgEnsure = "re-pin origin to paddock (GPS " + (d / 1000).toFixed(1) + " km away)"
+        }
+    }
+
     // Sync the loaded coverage to the active field: save the outgoing job, then
     // load the incoming one (re-entry). Called on field switch + at startup.
     function _syncActiveField() {
@@ -702,7 +798,11 @@ Item {
         }
     }
 
-    Component.onCompleted: field._syncActiveField()
+    Component.onCompleted: {
+        if (field.mode === 1)
+            field.userZoom = field._chaseDefaultZoom
+        field._syncActiveField()
+    }
 
     Connections {
         target: farm
@@ -727,6 +827,7 @@ Item {
     Connections {
         target: gps
         function onFixChanged() {
+            field._healOriginIfGpsFarFromPaddock();
             if (!app.recordingCoverage || !gps.hasOrigin)
                 return;
             var hr = gps.headingDeg * Math.PI / 180;
@@ -738,12 +839,39 @@ Item {
             if (!isFinite(field._lastRx) || !isFinite(field._lastRy)) {
                 field._lastRx = rx;
                 field._lastRy = ry;
+                field._covHdg = gps.headingDeg;
                 return;
             }
             var dx = rx - field._lastRx, dy = ry - field._lastRy;
-            if (dx * dx + dy * dy < 0.25)   // >= 0.5 m
+            if (dx * dx + dy * dy < 0.04)   // >= 0.20 m — fewer pts = less QML paint churn
                 return;
             field._lastRx = rx; field._lastRy = ry;
+
+            // Prefer this step's track bearing when the mark moved far enough —
+            // tablet GNSS COG wanders; coverage should follow the painted path.
+            var stepLen = Math.sqrt(dx * dx + dy * dy);
+            var rawH = gps.headingDeg;
+            if (stepLen >= 0.8) {
+                var trackH = Math.atan2(dx, dy) * 180 / Math.PI;
+                if (trackH < 0) trackH += 360;
+                rawH = trackH;
+            }
+            // Deadband + slew coverage heading so tip geometry does not whip.
+            if (!isFinite(field._covHdg)) {
+                field._covHdg = rawH;
+            } else {
+                var dh = field._hdgDelta(field._covHdg, rawH);
+                if (Math.abs(dh) < 1.2)
+                    dh = 0;
+                else if (dh > 1.4)
+                    dh = 1.4;
+                else if (dh < -1.4)
+                    dh = -1.4;
+                field._covHdg = field._covHdg + dh;
+                if (field._covHdg >= 360) field._covHdg -= 360;
+                if (field._covHdg < 0) field._covHdg += 360;
+            }
+            hr = field._covHdg * Math.PI / 180;
 
             // Target rate active at this point (Rx lookup or flat), tagged onto any
             // chunk started here so the as-applied record carries the target rate.
@@ -753,6 +881,10 @@ Item {
             var N = field.sectionCount;
             var rex = Math.cos(hr), rny = -Math.sin(hr);  // right (east,north)
             if (field.activeStrokes.length !== N) field.activeStrokes = field._nulls(N);
+            var act = field.activeStrokes.slice();
+            var lastE = field._lastSecE.slice();
+            var lastN = field._lastSecN.slice();
+            while (lastE.length < N) { lastE.push(NaN); lastN.push(NaN); }
             var onArr = [];
             var cum = -app.implementWidth / 2;            // left edge of the boom
             for (var i = 0; i < N; ++i) {
@@ -761,32 +893,40 @@ Item {
                 cum += secW;
                 var se = rx + t * rex;
                 var sn = ry + t * rny;
-                if (!isFinite(se) || !isFinite(sn)) { onArr.push(false); continue; }
-                var on = !(app.sectionControl && coverage.isCovered(se, sn));
-                onArr.push(on);
-                if (on) {
-                    coverage.mark(se, sn, gps.headingDeg, secW);
-                    var st = field.activeStrokes[i];
-                    if (!st || st.w !== secW) {
-                        // new section, or its width was just edited: close the old
-                        // chunk so the worked swath keeps the width it was laid at.
-                        if (st) field._freeze(st);
-                        st = { w: secW, pts: [], tr: tgt, tu: tgu }; field.activeStrokes[i] = st;
-                    }
-                    st.pts.push(Qt.point(se, -sn));
-                    if (st.pts.length >= field._chunkMax) {
-                        // freeze this chunk; continue a new one from the last point
-                        field._freeze(st);
-                        field.activeStrokes[i] = { w: secW, tr: tgt, tu: tgu,
-                                                   pts: [ st.pts[st.pts.length - 1] ] };
-                    }
-                } else if (field.activeStrokes[i]) {
-                    field._freeze(field.activeStrokes[i]);
-                    field.activeStrokes[i] = null;
+                if (!isFinite(se) || !isFinite(sn) || !(secW > 0)) {
+                    onArr.push(false);
+                    continue;
+                }
+                // Section-control lamp only — never gate the trail on isCovered.
+                var already = coverage.isCovered(se, sn);
+                onArr.push(!(app.sectionControl && already));
+                if (isFinite(lastE[i]) && isFinite(lastN[i]))
+                    coverage.markAlong(lastE[i], lastN[i], se, sn, field._covHdg, secW);
+                else
+                    coverage.mark(se, sn, field._covHdg, secW);
+                lastE[i] = se;
+                lastN[i] = sn;
+                var st = act[i];
+                if (!st || st.w !== secW) {
+                    if (st) field._freeze(st);
+                    st = { w: secW, pts: [], tr: tgt, tu: tgu };
+                    act[i] = st;
+                }
+                st.pts = (st.pts ? st.pts.slice() : []).concat(
+                            [{ x: se, y: -sn, h: field._covHdg }]);
+                act[i] = st;
+                if (st.pts.length >= field._chunkMax) {
+                    field._freeze(st);
+                    // Keep last 2 pts so freeze never leaves a lone circle stamp.
+                    act[i] = { w: secW, tr: tgt, tu: tgu,
+                               pts: st.pts.slice(-2) };
                 }
             }
+            field._lastSecE = lastE;
+            field._lastSecN = lastN;
+            field.activeStrokes = act;
             field.sectionOn = onArr;
-            field.activeVersion++;
+            field._commitActive();
             if (!paintCoalesce.running)
                 paintCoalesce.start();
         }
@@ -932,7 +1072,12 @@ Item {
     // diagonal so it bounds the AB perpendicular at any heading-up rotation.
     readonly property real _viewHalfSpanM: {
         var diagPx = Math.sqrt(width * width + height * height) / 2;
-        return diagPx / Math.max(0.0001, field.viewScale);
+        var span = diagPx / Math.max(0.0001, field.viewScale);
+        // Chase X-tilt foreshortens depth — ground to the horizon is much farther
+        // than the flat screen diagonal implies.
+        if (field.mode === 1)
+            span = Math.max(span, span / Math.max(0.28, Math.cos(field.tilt * Math.PI / 180)));
+        return span;
     }
     // Offset index of the run line through the centre of the view: the tractor in
     // chase/top-down, the field centre in whole-paddock fit. Centres the window.
@@ -969,10 +1114,10 @@ Item {
 
     // ---- Viewport culling of frozen coverage chunks (1000 ha worked stays smooth) ----
     // Same approach as the run lines: only frozen chunks whose world bbox intersects
-    // the view are instantiated. The C++ Coverage store does the bbox query over a
-    // compact vector; here we build a QUANTISED view rect so the visible set (and the
-    // Repeater) changes only when the view moves a cell or a chunk freezes — never
-    // per fix. Zoomed right out (fit), the query strides the result down to _covMaxN.
+    // the view are turned into paint segments. The C++ Coverage store does the bbox
+    // query over a compact vector; here we build a QUANTISED view rect so the visible
+    // set changes only when the view moves a cell or a chunk freezes — never per fix.
+    // Zoomed right out (fit), the query strides the result down to _covMaxN.
     readonly property int _covMaxN: 300
     readonly property real _covQuant: 64
     // View centre in swath coords (x = east, y = -north), matching the chunk bboxes.
@@ -995,6 +1140,32 @@ Item {
     readonly property var _visChunks: (field.doneCount,
         coverage.visibleChunks(field._covMinX, field._covMinY,
                                field._covMaxX, field._covMaxY, field._covMaxN))
+
+    // Cell-span fill — fallback / fit-overview only (painted when swaths empty).
+    // mark() still stamps cells for areaHa; path-aligned ribbons are the live paint.
+    readonly property real _minCellScreenPx: 8.0
+    readonly property int _cellPaintMax: field.fitField ? 2500 : 2000
+    readonly property int _rowMergeCells: Math.max(1,
+        Math.ceil((field._minCellScreenPx / Math.max(0.05, field.viewScale)) / 0.5))
+    readonly property var _visCellPaint: {
+        // Do NOT read coverage.cellCount / areaHa here — QML would rebuild this
+        // on every mark(). paintCoalesce bumps _paintVersion on coverage.changed.
+        var _dep = [
+            field._paintVersion,
+            field._covMinX, field._covMinY, field._covMaxX, field._covMaxY,
+            field.viewScale, field._rowMergeCells
+        ].join("|");
+        var spans = coverage.visibleCellSpans(field._covMinX, field._covMinY,
+                                            field._covMaxX, field._covMaxY,
+                                            field._cellPaintMax,
+                                            field._rowMergeCells);
+        var out = [];
+        for (var i = 0; i < spans.length; ++i) {
+            var t = spans[i];
+            out.push({ x: t.x, y: t.y, w: t.w, h: t.h });
+        }
+        return out;
+    }
 
     function _abPts(line, koff) {
         if (!line) return [];
@@ -1020,6 +1191,165 @@ Item {
         return [Qt.point(ax, -ay), Qt.point(bx, -by)];
     }
 
+    // Viewport-sized ground/grid (fixed ±800/±2000 world boxes vanished when
+    // zoomed out — left Style.bg black around a tiny grey patch).
+    // Grid lines snap to the local-origin lattice (not the tractor) so the
+    // background stays world-fixed while chase-cam keeps the machine centred.
+    readonly property real _gridStep: 20
+    readonly property real _gridHalf: {
+        var half = Math.ceil(field._viewHalfSpanM * 1.35 / field._gridStep)
+                   * field._gridStep + field._gridStep
+        return Math.max(120, half)
+    }
+    readonly property real _gridStartX: Math.floor(
+        (field._covCenter.x - field._gridHalf) / field._gridStep) * field._gridStep
+    readonly property real _gridStartY: Math.floor(
+        (field._covCenter.y - field._gridHalf) / field._gridStep) * field._gridStep
+    readonly property int _gridLines: Math.min(100,
+        Math.floor(field._gridHalf * 2 / field._gridStep) + 2)
+
+    // Offline satellite tiles (world-locked). Quantised so we don't rebuild the
+    // Image list on every GPS tick — only when the view moves / zoom changes.
+    readonly property real _satQuantDeg: 0.0008
+    // Chase perspective maps ~∞ m to the skyline — need kilometres of far tiles,
+    // not just the flat screen diagonal.
+    readonly property real _satChaseAheadM: 2200
+    readonly property real _satChaseSideM: 450
+    readonly property real _satNearAheadM: 320
+
+    function _satGeoFromSamples(samples, mpp) {
+        var south = 90, north = -90, west = 180, east = -180
+        var any = false
+        for (var i = 0; i < samples.length; ++i) {
+            var p = samples[i]
+            var g = gps.toGeo(p.e, p.n)
+            if (!g || !isFinite(g.lat) || !isFinite(g.lon))
+                continue
+            any = true
+            south = Math.min(south, g.lat)
+            north = Math.max(north, g.lat)
+            west = Math.min(west, g.lon)
+            east = Math.max(east, g.lon)
+        }
+        if (!any)
+            return null
+        var q = field._satQuantDeg
+        return {
+            south: Math.floor(south / q) * q,
+            west: Math.floor(west / q) * q,
+            north: Math.ceil(north / q) * q,
+            east: Math.ceil(east / q) * q,
+            mpp: mpp
+        }
+    }
+
+    function _satChaseSamples(aheadM, sideM) {
+        var hdg = gps.headingDeg * Math.PI / 180
+        var fx = Math.sin(hdg), fy = Math.cos(hdg)
+        var sx = Math.cos(hdg), sy = -Math.sin(hdg)
+        var ox, oy
+        if (field.following) {
+            ox = gps.localX; oy = gps.localY
+        } else {
+            var c0 = field._screenToWorld(width * 0.5, height * 0.5)
+            ox = c0.e; oy = c0.n
+        }
+        var samples = []
+        var fracs = [0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 1.0]
+        for (var fi = 0; fi < fracs.length; ++fi) {
+            var d = aheadM * fracs[fi]
+            var bx = ox + fx * d
+            var by = oy + fy * d
+            var side = sideM * (0.35 + 0.65 * fracs[fi])
+            samples.push({ e: bx, n: by })
+            samples.push({ e: bx + sx * side, n: by + sy * side })
+            samples.push({ e: bx - sx * side, n: by - sy * side })
+        }
+        samples.push({ e: ox - fx * Math.min(120, sideM * 0.4),
+                       n: oy - fy * Math.min(120, sideM * 0.4) })
+        return samples
+    }
+
+    function _satMergeTiles(baseList, detailList) {
+        var seen = ({})
+        var out = []
+        function add(list) {
+            if (!list)
+                return
+            for (var i = 0; i < list.length; ++i) {
+                var t = list[i]
+                var k = t.path || (t.z + "/" + t.x + "/" + t.y)
+                if (seen[k])
+                    continue
+                seen[k] = 1
+                out.push(t)
+            }
+        }
+        // Far/base first so sharper detail paints on top.
+        add(baseList)
+        add(detailList)
+        return out
+    }
+
+    readonly property var _satViewGeo: {
+        if (!gps.hasOrigin || width < 8 || height < 8)
+            return null
+        var dpr = Math.max(1.0, Screen.devicePixelRatio)
+        // Lower mpp → higher Esri zoom (max clarity near boom / zoomed-in).
+        var mpp = ((1.0 / Math.max(0.02, field.viewScale)) / dpr) * 0.28
+        if (field.mode === 1)
+            return field._satGeoFromSamples(
+                        field._satChaseSamples(field._satNearAheadM,
+                                               Math.max(120, field._viewHalfSpanM * 0.9)),
+                        mpp)
+        var samples = [
+            field._screenToWorld(0, 0),
+            field._screenToWorld(width, 0),
+            field._screenToWorld(0, height),
+            field._screenToWorld(width, height),
+            field._screenToWorld(width * 0.5, height * 0.5)
+        ]
+        return field._satGeoFromSamples(samples, mpp)
+    }
+    readonly property var _satFarGeo: {
+        if (!gps.hasOrigin || field.mode !== 1 || width < 8)
+            return null
+        var dpr = Math.max(1.0, Screen.devicePixelRatio)
+        // ~2–3 zooms coarser than near field — few tiles cover to the skyline.
+        var mpp = ((1.0 / Math.max(0.02, field.viewScale)) / dpr) * 6.0
+        return field._satGeoFromSamples(
+                    field._satChaseSamples(field._satChaseAheadM, field._satChaseSideM),
+                    mpp)
+    }
+    readonly property var _satTiles: {
+        var rev = basemap.packRevision
+        var packsN = basemap.packs.length
+        var g = field._satViewGeo
+        if (!gps.hasOrigin || packsN < 1 || !g)
+            return []
+        var _dep = [rev, packsN, g.south, g.west, g.north, g.east,
+                    Math.round(Math.log(Math.max(0.02, field.viewScale)) * 8),
+                    field.mode].join("|")
+        var detailCap = field.fitField ? 100 : (field.mode === 1 ? 200 : 160)
+        var detail = basemap.visibleTiles(g.south, g.west, g.north, g.east,
+                                          g.mpp, detailCap)
+        if (field.mode !== 1)
+            return detail
+        var far = field._satFarGeo
+        if (!far)
+            return detail
+        var base = basemap.visibleTiles(far.south, far.west, far.north, far.east,
+                                        far.mpp, 90)
+        return field._satMergeTiles(base, detail)
+    }
+
+    // Full-bleed grey so tilt / zoom never exposes the app black background.
+    Rectangle {
+        anchors.fill: parent
+        color: Style.ground
+        z: -1
+    }
+
     // ---- Ground (tilted) ----
     Item {
         id: tiltContainer
@@ -1041,59 +1371,106 @@ Item {
                 Translate { x: field.viewOffX; y: field.viewOffY }
             ]
 
+            readonly property real _groundCx: field._covCenter.x
+            readonly property real _groundCy: field._covCenter.y
+            readonly property real _groundHalf: field.fitField && field.fb
+                    ? Math.max(field._gridHalf,
+                               Math.max(field.fb.maxx - field.fb.minx,
+                                        field.fb.maxy - field.fb.miny) * 0.65 + 40)
+                    : (field.mode === 1
+                       ? Math.max(field._gridHalf * 2.5, field._satChaseAheadM * 1.05)
+                       : field._gridHalf * 2.5)
+
             Rectangle {
-                x: -2000; y: -2000; width: 4000; height: 4000
+                x: world._groundCx - world._groundHalf
+                y: world._groundCy - world._groundHalf
+                width: world._groundHalf * 2
+                height: world._groundHalf * 2
                 gradient: Gradient {
                     GradientStop { position: 0.0; color: Style.groundEdge }
                     GradientStop { position: 0.5; color: Style.ground }
                     GradientStop { position: 1.0; color: Style.groundEdge }
                 }
             }
-
+            // Offline Esri imagery (under grid + coverage). World-locked via lat/lon.
             Repeater {
-                model: 41
-                Rectangle { x: -800 + index * 40; y: -800; width: 0.25; height: 1600
-                            color: Style.gridMinor; opacity: 0.5 }
+                model: field._satTiles
+                Image {
+                    asynchronous: true
+                    cache: true
+                    // Nearest when upscaling soft tiles; mipmaps help when
+                    // oversampled high-z tiles are shown zoomed out.
+                    smooth: true
+                    mipmap: true
+                    fillMode: Image.Stretch
+                    source: modelData.path
+                    sourceSize.width: 256
+                    sourceSize.height: 256
+                    readonly property var _nw: gps.toLocal(modelData.north, modelData.west)
+                    readonly property var _se: gps.toLocal(modelData.south, modelData.east)
+                    x: _nw.x
+                    y: -_nw.y
+                    width: Math.max(0.5, _se.x - _nw.x)
+                    height: Math.max(0.5, _nw.y - _se.y)
+                    opacity: 1.0
+                    z: 0
+                }
             }
             Repeater {
-                model: 41
-                Rectangle { x: -800; y: -800 + index * 40; width: 1600; height: 0.25
-                            color: Style.gridMinor; opacity: 0.5 }
+                model: field._gridLines
+                Rectangle {
+                    x: field._gridStartX + index * field._gridStep - 0.125
+                    y: field._gridStartY
+                    width: 0.25; height: field._gridHalf * 2 + field._gridStep
+                    color: Style.gridMinor; opacity: field._satTiles.length ? 0.18 : 0.35
+                    z: 1
+                }
             }
-            Rectangle { x: -0.3; y: -800; width: 0.6; height: 1600; color: Style.gridMajor }
-            Rectangle { x: -800; y: -0.3; width: 1600; height: 0.6; color: Style.gridMajor }
-            Text { text: "N"; color: Style.cardinal; font.pixelSize: 14; x: -4; y: -120 }
-            Text { text: "S"; color: Style.cardinal; font.pixelSize: 14; x: -4; y: 108 }
-            Text { text: "E"; color: Style.cardinal; font.pixelSize: 14; x: 110; y: -8 }
-            Text { text: "W"; color: Style.cardinal; font.pixelSize: 14; x: -118; y: -8 }
-
-            // coverage swaths — frozen chunks, viewport-culled (see _visChunks). The
-            // model is the bounded list of chunk indices whose bbox intersects the
-            // view, so a fully-worked 1000 ha field renders O(visible) chunks, not
-            // all of them. Each chunk is triangulated once; the same >= 2-point guard
-            // applies so a null/short chunk never reaches the Mali-400 GL ES2 backend.
             Repeater {
-                model: field._visChunks
-                Shape {
-                    id: doneShape
-                    readonly property var _st: field.doneStrokes[modelData]
-                    readonly property var _pts: (_st && _st.pts && _st.pts.length >= 2) ? _st.pts : []
-                    readonly property real _w: (_st && _st.pts && _st.pts.length >= 2) ? _st.w : 0
-                    visible: _pts.length >= 2
-                    ShapePath {
-                        strokeColor: "#883ddc84"
-                        strokeWidth: doneShape._w
-                        fillColor: "transparent"
-                        capStyle: ShapePath.RoundCap
-                        joinStyle: ShapePath.RoundJoin
-                        PathPolyline { path: doneShape._pts }
-                    }
+                model: field._gridLines
+                Rectangle {
+                    x: field._gridStartX
+                    y: field._gridStartY + index * field._gridStep - 0.125
+                    width: field._gridHalf * 2 + field._gridStep; height: 0.25
+                    color: Style.gridMinor; opacity: field._satTiles.length ? 0.18 : 0.35
+                    z: 1
                 }
             }
 
-            // Active swaths — growing chunks only. Frozen chunks stay on Shape
-            // (triangulated once); live strokes use cheap rotated rects so the
-            // Mali-400 is not retessellating PathPolyline on every GPS fix.
+            // Axis-aligned cell spans only when swaths can't paint (empty) or
+            // whole-field overview — otherwise they show as chunky stair-steps
+            // around the path-aligned ribbons.
+            Repeater {
+                model: (field.fitField
+                        || (field._frozenPaintSegs.length
+                            + field._activePaintSegs.length) < 1)
+                       ? field._visCellPaint : []
+                Rectangle {
+                    x: modelData.x - 0.05
+                    y: modelData.y - 0.05
+                    width: modelData.w + 0.1
+                    height: modelData.h + 0.1
+                    color: "#883ddc84"
+                }
+            }
+            // Boom-width stroke overlays (frozen + active). Square bars = solid fill
+            // (rounded stadiums read as circles when the along-track step is short).
+            Repeater {
+                model: field._frozenPaintSegs
+                Item {
+                    x: modelData.x - modelData.w * 0.5
+                    y: modelData.y - modelData.h * 0.5
+                    width: modelData.w
+                    height: modelData.h
+                    rotation: modelData.rot
+                    transformOrigin: Item.Center
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: 0
+                        color: "#883ddc84"
+                    }
+                }
+            }
             Repeater {
                 model: field._activePaintSegs
                 Item {
@@ -1105,7 +1482,7 @@ Item {
                     transformOrigin: Item.Center
                     Rectangle {
                         anchors.fill: parent
-                        radius: Math.min(width, height) * 0.45
+                        radius: 0
                         color: "#883ddc84"
                     }
                 }
@@ -1131,6 +1508,21 @@ Item {
                     // large ones — the boundary still draws as a bright outline.
                     fillColor: boundaryShape.ring.length <= field._maxFillVerts ? "#22ff1aa3" : "transparent"
                     PathPolyline { path: boundaryShape.visible ? boundaryShape.ring : [] }
+                }
+            }
+
+            Shape {
+                id: draftBoundaryShape
+                readonly property var ring: (gps.hasOrigin && farm.boundaryDraftCount >= 2)
+                                            ? field._mapRing(farm.boundaryDraftPoints,
+                                                           !farm.boundaryRecording && farm.boundaryDraftCount >= 3)
+                                            : []
+                visible: ring.length >= 2
+                ShapePath {
+                    strokeColor: farm.boundaryRecording ? "#ffee00" : "#ffaa00"
+                    strokeWidth: draftBoundaryShape.visible ? Math.max(0.8, 2.8 / field.viewScale) : 0
+                    fillColor: "transparent"
+                    PathPolyline { path: draftBoundaryShape.visible ? draftBoundaryShape.ring : [] }
                 }
             }
 
@@ -1285,14 +1677,15 @@ Item {
                 // simple machine-relative metres.
                 x: implWorld.rp ? implWorld.rp.x : 0
                 y: implWorld.rp ? -implWorld.rp.y : 0
-                rotation: gps.headingDeg
+                rotation: (app.recordingCoverage && isFinite(field._covHdg))
+                          ? field._covHdg : gps.headingDeg
 
                 // boom arm: antenna (local 0,-offset) -> record point (local 0,0)
                 Rectangle {
                     width: 0.4
-                    height: app.implementOffset
+                    height: app.recordOffsetM
                     x: -width / 2
-                    y: -app.implementOffset
+                    y: -app.recordOffsetM
                     color: "#b9781b"
                     antialiasing: true
                 }

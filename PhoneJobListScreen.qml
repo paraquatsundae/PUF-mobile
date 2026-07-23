@@ -43,23 +43,10 @@ Item {
         anchors.fill: parent
         spacing: 0
 
-        Rectangle {
+        PhoneSubScreenHeader {
             Layout.fillWidth: true
-            implicitHeight: 48
-            color: theme.banner
-            RowLayout {
-                anchors.fill: parent
-                anchors.margins: 8
-                Rectangle {
-                    implicitWidth: 80; implicitHeight: 36; radius: 6
-                    color: backMa.pressed ? theme.bannerHi : "transparent"
-                    border.color: theme.accent
-                    Text { anchors.centerIn: parent; text: "< BACK"; color: theme.accent; font.bold: true }
-                    MouseArea { id: backMa; anchors.fill: parent; onClicked: jobList.back() }
-                }
-                Text { text: qsTr("Saved jobs"); color: theme.text; font.pixelSize: 18; font.bold: true }
-                Item { Layout.fillWidth: true }
-            }
+            title: qsTr("Saved jobs")
+            onBackClicked: jobList.back()
         }
 
         Text {

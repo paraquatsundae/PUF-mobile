@@ -4,6 +4,7 @@
         <file alias="FormFactor.js">FormFactor.js</file>
         <file alias="main.qml">main.qml</file>
         <file alias="Style.js">Style.js</file>
+        <file alias="RecordPoint.js">RecordPoint.js</file>
         <file alias="Elements.js">Elements.js</file>
         <file alias="Icons.js">Icons.js</file>
         <file alias="Sections.js">Sections.js</file>
@@ -51,8 +52,19 @@
         <file alias="PhoneWorkChoicePopup.qml">PhoneWorkChoicePopup.qml</file>
         <file alias="PhoneJobListScreen.qml">PhoneJobListScreen.qml</file>
         <file alias="PhoneGpsBanner.qml">PhoneGpsBanner.qml</file>
+        <file alias="PhoneSubScreenHeader.qml">PhoneSubScreenHeader.qml</file>
+        <file alias="PhoneBoundaryScreen.qml">PhoneBoundaryScreen.qml</file>
+        <file alias="UserGuidePopup.qml">UserGuidePopup.qml</file>
+        <file alias="RecordAttachmentPanel.qml">RecordAttachmentPanel.qml</file>
+        <file alias="FarmDataImportPopup.qml">FarmDataImportPopup.qml</file>
+        <file alias="BoundaryRecordScreen.qml">BoundaryRecordScreen.qml</file>
+        <file alias="BoundaryRecordPage.qml">BoundaryRecordPage.qml</file>
+        <file alias="BoundaryGpsBridge.qml">BoundaryGpsBridge.qml</file>
         <file alias="CoverageRecorder.qml">CoverageRecorder.qml</file>
+        <file alias="MapsSetupPage.qml">MapsSetupPage.qml</file>
+        <file alias="BasemapPromptDialog.qml">BasemapPromptDialog.qml</file>
+        <file alias="PhoneMapsScreen.qml">PhoneMapsScreen.qml</file>
         <file alias="assets/farm/README.md">assets/farm/README.md</file>
-        <file alias="assets/farm/TASKDATA.XML">assets/farm/TASKDATA.XML</file>
+        <file alias="assets/farm/TASKDATA.EMPTY.xml">assets/farm/TASKDATA.EMPTY.xml</file>
     </qresource>
 </RCC>

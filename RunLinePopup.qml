@@ -16,7 +16,9 @@ Popup {
     anchors.centerIn: Overlay.overlay
     width: Math.min(820, (parent ? parent.width : 820) - 40)
     height: Math.min(540, (parent ? parent.height : 540) - 30)
-    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+    // No CloseOnPressOutside — that press was falling through to the Record
+    // softkey and stopping coverage mid-run.
+    closePolicy: Popup.CloseOnEscape
 
     // 0 = select existing, 1 = A+B, 2 = A+heading, 3 = lat/lon+heading
     property int mode: 0

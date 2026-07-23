@@ -33,6 +33,7 @@ Flickable {
 
     property var tiles: [
         { id: "farm",    title: qsTr("Farm Setup"), glyph: Icons.farm,  desc: qsTr("Clients, farms, fields, boundaries, import") },
+        { id: "bndrec",  title: qsTr("Record boundary"), glyph: Icons.track, desc: qsTr("Drive-around paddock capture, archive") },
         { id: "ablines", title: qsTr("Run Lines"),  glyph: Icons.track, desc: qsTr("Rename, delete, select, view AB lines") }
     ]
 
