@@ -261,10 +261,14 @@ Flickable {
                         text: qsTr("Import")
                         enabled: impRow.isKml ? (farm.browseFarmId.length > 0) : true
                         onClicked: {
+                            var n = 0
                             if (impRow.isKml)
-                                farm.importKmlToFarm(farm.browseClientId, farm.browseFarmId, modelData);
+                                n = farm.importKmlToFarm(farm.browseClientId, farm.browseFarmId, modelData);
                             else
-                                farm.importIsoxml(modelData);
+                                n = farm.importIsoxml(modelData);
+                            if (n > 0 && farm.boundaryCount >= 3)
+                                basemap.suggestForPoints(farm.activeFieldId, farm.activeFieldName,
+                                                         farm.activeBoundary, 250)
                         }
                     }
                 }

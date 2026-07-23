@@ -12,10 +12,16 @@
 #include "rxmap.h"
 #include "phoneplatform.h"
 #include "theme.h"
+#include "basemapstore.h"
 
 int main(int argc, char *argv[])
 {
     QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
+    // Android: load bundled libssl_1_1 / libcrypto_1_1 (see android_openssl).
+    // Must be set before any QNetworkAccessManager / QSslSocket use.
+#ifdef Q_OS_ANDROID
+    qputenv("ANDROID_OPENSSL_SUFFIX", "_1_1");
+#endif
     QGuiApplication app(argc, argv);
     app.setOrganizationName(QStringLiteral("PUFworks"));
     app.setApplicationName(QStringLiteral("PUF-mobile"));
@@ -30,6 +36,7 @@ int main(int argc, char *argv[])
     RxMap rx;
     PhonePlatform platform;
     Theme theme;
+    BasemapStore basemap;
     // Restore persisted machine setup + layout before the UI binds to them.
     controller.loadSettings();
     layout.load();
@@ -60,6 +67,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(QStringLiteral("rx"), &rx);
     engine.rootContext()->setContextProperty(QStringLiteral("platform"), &platform);
     engine.rootContext()->setContextProperty(QStringLiteral("theme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("basemap"), &basemap);
 
     const QUrl url(QStringLiteral("qrc:/main.qml"));
     QObject::connect(

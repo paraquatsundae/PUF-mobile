@@ -20,8 +20,8 @@ ApplicationWindow {
     // Meaningful soft-key band only (ignore spurious 1–7 px OEM noise).
     readonly property int tabletNavInset: platform.navigationBarInset >= 8 ? platform.navigationBarInset : 0
     // Bumped each deploy — visible on SETUP to confirm which build is on-device.
-    readonly property string tabletBuildId: "19Jul-jd-gps"
-    readonly property string phoneBuildId: "19Jul-jd-gps"
+    readonly property string tabletBuildId: "23Jul-noplace"
+    readonly property string phoneBuildId: "23Jul-noplace"
 
     // Dark palette so every Controls text input (TextField/ComboBox) reads light
     // text on a dark base instead of the Default style's black-on-white (which made
@@ -75,8 +75,17 @@ ApplicationWindow {
         "paddock":{ title: qsTr("Paddock Setup"), glyph: Icons.farm,  kind: "setup", stack: 9, back: "setup" },
         "ablines":{ title: qsTr("Run Lines"), glyph: Icons.track,     kind: "setup", stack: 10, back: "paddock" },
         "catalog":{ title: qsTr("Products & Mixes"), glyph: Icons.work, kind: "setup", stack: 11, back: "setup" },
-        "bndrec": { title: qsTr("Record boundary"), glyph: Icons.farm, kind: "setup", stack: 12, back: "paddock" }
+        "bndrec": { title: qsTr("Record boundary"), glyph: Icons.farm, kind: "setup", stack: 12, back: "paddock" },
+        "maps":   { title: qsTr("Offline Maps"), glyph: Icons.satellite, kind: "setup", stack: 13, back: "setup" }
     })
+
+    // After boundary import/create — offer offline sat pack if missing.
+    function suggestBasemapForActive() {
+        if (!farm.hasActiveField || farm.boundaryCount < 3)
+            return
+        basemap.suggestForPoints(farm.activeFieldId, farm.activeFieldName,
+                                 farm.activeBoundary, 250)
+    }
 
     function go(id) { currentPageId = id; }
     function pageTitle(id) { return pageInfo[id] ? pageInfo[id].title : id; }
@@ -108,10 +117,33 @@ ApplicationWindow {
     function bottomAction(keyId) {
         switch (keyId) {
         case "home":    go("nav"); break;
-        case "record":  app.toggleRecording(); break;
+        case "record":
+            // Confirm stop — closing a popup/menu with Outside press was landing
+            // on the Record softkey and silently ending the job.
+            if (app.recordingCoverage)
+                stopRecordDialog.open()
+            else
+                app.setRecording(true)
+            break
         case "section": app.toggleSectionControl(); break;
         case "abselect": runLinePopup.open(); break;
         case "setup":   go("setup"); break;
+        }
+    }
+
+    Dialog {
+        id: stopRecordDialog
+        modal: true
+        title: qsTr("Stop recording?")
+        standardButtons: Dialog.Yes | Dialog.No
+        anchors.centerIn: parent
+        width: Math.min(420, parent.width - 48)
+        onAccepted: app.setRecording(false)
+        Label {
+            text: qsTr("Coverage recording will stop. You can resume later from Work.")
+            wrapMode: Text.WordWrap
+            width: stopRecordDialog.availableWidth
+            color: Style.white
         }
     }
 
@@ -120,6 +152,8 @@ ApplicationWindow {
     BoundaryGpsBridge { }
 
     UserGuidePopup { id: userGuide }
+
+    BasemapPromptDialog { id: basemapPrompt }
 
     Timer {
         id: bootGuide
@@ -236,6 +270,7 @@ ApplicationWindow {
                 AbLinesPage { }
                 CatalogManagerPage { }
                 BoundaryRecordPage { onNavigateBack: shell.go("paddock") }
+                MapsSetupPage { }
             }
         }
 

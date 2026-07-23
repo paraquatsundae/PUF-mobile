@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFileDevice>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -15,6 +16,7 @@
 #include <QSet>
 #include <QVariantMap>
 #include <QtMath>
+#include <QDebug>
 #include <cmath>
 
 #ifdef Q_OS_ANDROID
@@ -1424,22 +1426,49 @@ void FarmStore::load()
 
 void FarmStore::save()
 {
-    TaskData::save(storagePath(), m_clients);
+    const QString path = storagePath();
+    // Older builds seeded TASKDATA from qrc via QFile::copy, which left the file
+    // read-only on Android — every save then failed and restarts looked like a wipe.
+    if (QFile::exists(path) && !QFileInfo(path).isWritable()) {
+        QFile::setPermissions(path,
+                              QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                  | QFileDevice::ReadUser | QFileDevice::WriteUser);
+        qWarning("[farm] cleared read-only on %s", qUtf8Printable(path));
+    }
+    if (!TaskData::save(path, m_clients))
+        qWarning("[farm] save FAILED path=%s clients=%d",
+                 qUtf8Printable(path), int(m_clients.size()));
 }
 
 void FarmStore::seedBundledFarmIfEmpty()
 {
-    if (QFileInfo::exists(storagePath()))
-        return;
-    // Tester builds ship an empty ISOXML seed (no Clare Downs / workshop data).
-    const QString bundled = QStringLiteral(":/assets/farm/TASKDATA.EMPTY.xml");
-    if (!QFileInfo::exists(bundled))
-        return;
-    const QString destDir = QFileInfo(storagePath()).absolutePath();
-    QDir().mkpath(destDir);
     const QString dest = storagePath();
-    if (QFile::exists(dest))
+    QFileInfo fi(dest);
+    if (fi.exists()) {
+        // Repair read-only empty seeds from earlier QFile::copy-from-qrc installs.
+        if (!fi.isWritable()) {
+            QFile::setPermissions(dest,
+                                  QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                      | QFileDevice::ReadUser | QFileDevice::WriteUser);
+            qWarning("[farm] repaired read-only seed %s", qUtf8Printable(dest));
+        }
         return;
-    if (!QFile::copy(bundled, dest))
+    }
+    // Tester builds ship an empty ISOXML seed (no Clare Downs / workshop data).
+    // Write bytes (do not QFile::copy from qrc) so the dest is owner-writable.
+    const QString bundled = QStringLiteral(":/assets/farm/TASKDATA.EMPTY.xml");
+    QFile src(bundled);
+    if (!src.open(QIODevice::ReadOnly))
         return;
+    QDir().mkpath(fi.absolutePath());
+    QFile out(dest);
+    if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        qWarning("[farm] seed write failed: %s", qUtf8Printable(dest));
+        return;
+    }
+    out.write(src.readAll());
+    out.close();
+    QFile::setPermissions(dest,
+                          QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                              | QFileDevice::ReadUser | QFileDevice::WriteUser);
 }

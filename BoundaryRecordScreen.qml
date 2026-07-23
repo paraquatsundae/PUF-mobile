@@ -392,8 +392,15 @@ Item {
                             anchors.fill: parent
                             enabled: farm.boundaryDraftCount >= 3 && !farm.boundaryRecording
                             onClicked: {
-                                if (farm.commitBoundary())
+                                if (farm.commitBoundary()) {
+                                    if (typeof shell !== "undefined" && shell.suggestBasemapForActive)
+                                        shell.suggestBasemapForActive()
+                                    else
+                                        basemap.suggestForPoints(farm.activeFieldId,
+                                                                 farm.activeFieldName,
+                                                                 farm.activeBoundary, 250)
                                     root.back()
+                                }
                             }
                         }
                     }

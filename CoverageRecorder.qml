@@ -7,13 +7,14 @@ Item {
     id: rec
     property real lastRx: NaN
     property real lastRy: NaN
+    property real covHdg: NaN
     property var doneStrokes: []
     property int doneCount: 0
     property var activeStrokes: []
     property int activeVersion: 0
     // Ignore onCleared while PhoneWorkSync replays saved GeoJSON strokes.
     property bool loadingCoverage: false
-    readonly property int _chunkMax: 150
+    readonly property int _chunkMax: 400
 
     function sectionCount() { return app.sectionCount }
     function secW(i) {
@@ -25,6 +26,12 @@ Item {
         return RecordPoint.recordLocal(gps, app)
     }
     function _nulls(n) { var a = []; for (var i = 0; i < n; ++i) a.push(null); return a }
+    function _hdgDelta(a, b) {
+        var d = b - a
+        while (d > 180) d -= 360
+        while (d < -180) d += 360
+        return d
+    }
     function _chunkBbox(pts, pad) {
         var minx = 1e18, miny = 1e18, maxx = -1e18, maxy = -1e18
         for (var i = 0; i < pts.length; ++i) {
@@ -79,12 +86,28 @@ Item {
             var rx = rp.x, ry = rp.y
             if (!isFinite(rec.lastRx) || !isFinite(rec.lastRy)) {
                 rec.lastRx = rx; rec.lastRy = ry
+                rec.covHdg = gps.headingDeg
                 return
             }
             var dx = rx - rec.lastRx, dy = ry - rec.lastRy
-            if (dx * dx + dy * dy < 0.0225) return  // >= 0.15 m
+            if (dx * dx + dy * dy < 0.04) return  // >= 0.20 m — less paint churn
             rec.lastRx = rx; rec.lastRy = ry
-            var hr = gps.headingDeg * Math.PI / 180
+            var rawH = gps.headingDeg
+            if (!isFinite(rec.covHdg)) {
+                rec.covHdg = rawH
+            } else {
+                var dh = rec._hdgDelta(rec.covHdg, rawH)
+                if (Math.abs(dh) < 0.7)
+                    dh = 0
+                else if (dh > 1.8)
+                    dh = 1.8
+                else if (dh < -1.8)
+                    dh = -1.8
+                rec.covHdg = rec.covHdg + dh
+                if (rec.covHdg >= 360) rec.covHdg -= 360
+                if (rec.covHdg < 0) rec.covHdg += 360
+            }
+            var hr = rec.covHdg * Math.PI / 180
             var N = rec.sectionCount()
             var rex = Math.cos(hr), rny = -Math.sin(hr)
             if (rec.activeStrokes.length !== N)
@@ -102,20 +125,22 @@ Item {
                 var st = act[i]
                 if (st && st.pts && st.pts.length > 0) {
                     var prev = st.pts[st.pts.length - 1]
-                    coverage.markAlong(prev.x, -prev.y, se, sn, gps.headingDeg, w)
+                    coverage.markAlong(prev.x, -prev.y, se, sn, rec.covHdg, w)
                 } else {
-                    coverage.mark(se, sn, gps.headingDeg, w)
+                    coverage.mark(se, sn, rec.covHdg, w)
                 }
                 if (!st || st.w !== w) {
                     if (st) rec._freeze(st)
                     st = { w: w, pts: [] }
                     act[i] = st
                 }
-                st.pts = (st.pts ? st.pts.slice() : []).concat([Qt.point(se, -sn)])
+                st.pts = (st.pts ? st.pts.slice() : []).concat(
+                            [{ x: se, y: -sn, h: rec.covHdg }])
                 act[i] = st
                 if (st.pts.length >= rec._chunkMax) {
                     rec._freeze(st)
-                    act[i] = { w: w, pts: [ st.pts[st.pts.length - 1] ] }
+                    // Keep last 2 pts — a lone carry-over painted as a boom circle.
+                    act[i] = { w: w, pts: st.pts.slice(-2) }
                 }
             }
             rec.activeStrokes = act
@@ -134,8 +159,10 @@ Item {
                     rec.lastRx = NaN
                     rec.lastRy = NaN
                 }
+                rec.covHdg = gps.headingDeg
             } else {
                 rec.lastRx = NaN; rec.lastRy = NaN
+                rec.covHdg = NaN
                 rec._freezeAllActive()
             }
         }

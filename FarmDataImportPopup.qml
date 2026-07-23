@@ -104,6 +104,9 @@ Popup {
         }
         if (n > 0) {
             statusText = qsTr("Imported %1 field(s).").arg(n)
+            if (farm.boundaryCount >= 3)
+                basemap.suggestForPoints(farm.activeFieldId, farm.activeFieldName,
+                                         farm.activeBoundary, 250)
             importFinished()
             close()
         } else {

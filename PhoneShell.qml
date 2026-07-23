@@ -348,7 +348,9 @@ Item {
 
             Layout.fillHeight: true
 
-            currentIndex: phone.showJobList ? 7
+            currentIndex: phone.showJobList ? 8
+
+                        : setupScreen === "maps" ? 7
 
                         : setupScreen === "boundary" ? 6
 
@@ -406,6 +408,8 @@ Item {
 
                 onOpenBoundary: phone.setupScreen = "boundary"
 
+                onOpenMaps: phone.setupScreen = "maps"
+
                 onOpenGuide: if (phone.openUserGuide) phone.openUserGuide(false)
 
             }
@@ -437,6 +441,10 @@ Item {
             PhoneGpsScreen { onBack: phone.setupScreen = "" }
 
             PhoneBoundaryScreen {
+                onBack: phone.setupScreen = ""
+            }
+
+            PhoneMapsScreen {
                 onBack: phone.setupScreen = ""
             }
 

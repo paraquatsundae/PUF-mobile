@@ -27,16 +27,23 @@ constexpr double kDcutoff = 1.0;                 // derivative low-pass cutoff (
 // needs a steadier heading. tau = tauBase[tier] + kWidth*widthM, capped.
 constexpr double kHeadTauRtk  = 0.20; // s
 constexpr double kHeadTauSbas = 0.40; // s
-constexpr double kHeadTauGnss = 0.70; // s
+// Tablet / phone GNSS COG is noisy — longer EMA before the boom follows.
+constexpr double kHeadTauGnss = 1.60; // s
 constexpr double kHeadKWidth  = 0.05; // s per metre of width
-constexpr double kHeadTauMax  = 3.00; // s — cap so steering never feels dead
+constexpr double kHeadTauMax  = 3.50; // s — cap so steering never feels dead
 
 // Below this ground speed GPS course/track is meaningless: freeze heading so it
-// cannot spin from position noise at standstill.
-constexpr double kHoldSpeedKmh = 0.8;
+// cannot spin from position noise at standstill. GNSS needs a higher floor —
+// Android often reports 1–2 km/h chatter while parked.
+constexpr double kHoldSpeedRtkKmh  = 0.8;
+constexpr double kHoldSpeedSbasKmh = 1.0;
+constexpr double kHoldSpeedGnssKmh = 2.2;
 // Minimum filtered displacement before a new bearing is computed (m). Guards
-// against a near-zero step producing a garbage atan2 direction.
-constexpr double kMinStepM = 0.05;
+// against a near-zero step producing a garbage atan2 direction. Consumer GNSS
+// position noise is metres-scale, so require a real move before updating.
+constexpr double kMinStepRtkM  = 0.05;
+constexpr double kMinStepSbasM = 0.25;
+constexpr double kMinStepGnssM = 1.50;
 // dt guards: a non-positive or absurd gap (first sample, stream stall) is
 // replaced by a nominal 10 Hz step so the filter stays stable.
 constexpr double kNominalDt = 0.1;
@@ -57,6 +64,24 @@ double headTauBase(Tier t)
     case Tier::Rtk:  return kHeadTauRtk;
     case Tier::Sbas: return kHeadTauSbas;
     case Tier::Gnss: default: return kHeadTauGnss;
+    }
+}
+
+double holdSpeedKmh(Tier t)
+{
+    switch (t) {
+    case Tier::Rtk:  return kHoldSpeedRtkKmh;
+    case Tier::Sbas: return kHoldSpeedSbasKmh;
+    case Tier::Gnss: default: return kHoldSpeedGnssKmh;
+    }
+}
+
+double minStepM(Tier t)
+{
+    switch (t) {
+    case Tier::Rtk:  return kMinStepRtkM;
+    case Tier::Sbas: return kMinStepSbasM;
+    case Tier::Gnss: default: return kMinStepGnssM;
     }
 }
 
@@ -148,13 +173,27 @@ GpsFilter::Output GpsFilter::update(double rawX, double rawY, double speedKmh,
     out.y = m_fy.filter(rawY, dt, ep.mincutoff, ep.beta, kDcutoff);
 
     if (trueHeadingDeg >= 0.0) {
-        // JD TCM / dual-antenna yaw is authoritative. Do NOT apply the
-        // boom-width EMA here — that τ (~2 s on a 36 m boom) made coverage and
-        // the map heading lag the machine (classic “sway” / skewed swaths).
-        // Tiny blend only to kill single-sample TCM jitter.
-        constexpr double kTrueHeadTau = 0.05; // seconds
+        // JD TCM / dual-antenna yaw is authoritative. A 50 ms EMA let single-
+        // sample TCM jitter whip wide booms (tips move ~0.3 m per 1° on 36 m).
+        // Full boom-width τ (~2 s) lagged too much; 0.28 s + slew cap keeps the
+        // implement steady without the old “sway” look.
+        constexpr double kTrueHeadTau = 0.28; // seconds
+        constexpr double kTrueHeadMaxDegPerSec = 40.0;
+        double target = trueHeadingDeg;
+        if (m_haveHeading) {
+            double d = target - m_headingDeg;
+            while (d > 180.0) d -= 360.0;
+            while (d < -180.0) d += 360.0;
+            const double maxStep = kTrueHeadMaxDegPerSec * dt;
+            if (d > maxStep) d = maxStep;
+            if (d < -maxStep) d = -maxStep;
+            // Ignore sub-degree chatter that still moves boom tips a lot.
+            if (std::fabs(d) < 0.35)
+                d = 0.0;
+            target = m_headingDeg + d;
+        }
         const double aTrue = dt / (kTrueHeadTau + dt);
-        const double br = trueHeadingDeg * kPi / 180.0;
+        const double br = target * kPi / 180.0;
         const double s = std::sin(br), c = std::cos(br);
         if (!m_haveHeading) {
             m_sinH = s; m_cosH = c; m_haveHeading = true;
@@ -163,7 +202,7 @@ GpsFilter::Output GpsFilter::update(double rawX, double rawY, double speedKmh,
             m_cosH += aTrue * (c - m_cosH);
         }
         m_headingDeg = norm360(std::atan2(m_sinH, m_cosH) * 180.0 / kPi);
-    } else if (m_havePos && speedKmh >= kHoldSpeedKmh) {
+    } else if (m_havePos && speedKmh >= holdSpeedKmh(tier)) {
         // Track-derived COG: width-scaled EMA (noisy at RTK centimetre scale).
         double tau = headTauBase(tier) + kHeadKWidth * (widthM > 0.0 ? widthM : 0.0);
         if (tau > kHeadTauMax)
@@ -171,7 +210,7 @@ GpsFilter::Output GpsFilter::update(double rawX, double rawY, double speedKmh,
         const double aHead = dt / (tau + dt);
         const double dEast = out.x - m_lastX;
         const double dNorth = out.y - m_lastY;
-        if (std::sqrt(dEast * dEast + dNorth * dNorth) >= kMinStepM) {
+        if (std::sqrt(dEast * dEast + dNorth * dNorth) >= minStepM(tier)) {
             // Compass bearing: 0 = north, 90 = east -> atan2(east, north).
             const double br = std::atan2(dEast, dNorth);
             const double s = std::sin(br), c = std::cos(br);

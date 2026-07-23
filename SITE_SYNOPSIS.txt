@@ -6,7 +6,7 @@ ONE-LINER
 Qt/Android heading-up guidance app for cab tablets — boundaries, AB lines, coverage recording, and John Deere position via UDP NMEA bridge.
 
 SYNOPSIS
-- Cab-side map UI: parses NMEA ($GGA/$RMC/$VTG/$HDT) and AgOpenGPS-style $PANDA/$PAOGI; heading-up tractor/implement, worked-area swaths, job recording as GeoJSON.
+- Cab-side map UI: parses NMEA ($GGA/$RMC/$VTG/$HDT) from UDP bridge, serial, Bluetooth, or tablet GNSS; heading-up tractor/implement, worked-area swaths, job recording as GeoJSON.
 - Client → Farm → Field hierarchy persisted locally (ISOXML TASKDATA.XML); import unzipped Ops Center exports or KML from tablet Download/Farm_data/.
 - GPS backends: UDP :9999 (recommended for JD StarFire/616R via laptop gps_bridge.exe), internal serial, Bluetooth, tablet GNSS, on-tablet USB-CAN (power-limited).
 - Implement setup: width, offset, section count/numbering (JD L/C/R labels) — layout convention mirrored read-only by PUFworks-vision for boom mapping.

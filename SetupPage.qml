@@ -36,6 +36,7 @@ Flickable {
 
     property var tiles: [
         { id: "paddock",title: qsTr("Paddock Setup"), glyph: Icons.farm,    desc: qsTr("Fields, boundaries, run lines, import") },
+        { id: "maps",   title: qsTr("Offline Maps"), glyph: Icons.satellite, desc: qsTr("Download satellite imagery for paddocks") },
         { id: "impl",   title: qsTr("Implement"),   glyph: Icons.implement, desc: qsTr("Width, sections, connection type, receiver offset") },
         { id: "layout", title: qsTr("Layout"),      glyph: Icons.layout,    desc: qsTr("Pages, columns, elements") },
         { id: "conn",   title: qsTr("GPS / Source"), glyph: Icons.gps,      desc: qsTr("Connection and NMEA source") },

@@ -156,27 +156,30 @@ Item {
                     ? ft.properties.width_m : (app.implementWidth / app.sectionCount)
             var cs = ft.geometry.coordinates
             if (!cs || !cs.length) continue
-            var pts = [], locals = []
+            var locals = []
             for (var j = 0; j < cs.length; ++j) {
                 var c = cs[j]
                 if (!c || c.length < 2) continue
                 var p = gps.toLocal(c[1], c[0])
                 if (!isFinite(p.x) || !isFinite(p.y)) continue
                 if (Math.abs(p.x) > sync._maxLocalM || Math.abs(p.y) > sync._maxLocalM) continue
-                pts.push(Qt.point(p.x, -p.y))
                 locals.push(p)
             }
-            if (pts.length < 2) continue
+            if (locals.length < 2) continue
+            var pts = []
+            for (var j2 = 0; j2 < locals.length; ++j2) {
+                var a0 = locals[j2]
+                var a1 = locals[Math.min(j2 + 1, locals.length - 1)]
+                var de0 = a1.x - a0.x, dn0 = a1.y - a0.y
+                var hdg0 = (de0 === 0 && dn0 === 0) ? gps.headingDeg
+                                                    : Math.atan2(de0, dn0) * 180 / Math.PI
+                if (hdg0 < 0) hdg0 += 360
+                pts.push({ x: a0.x, y: -a0.y, h: hdg0 })
+            }
             var bb = sync._chunkBbox(pts, w)
             done.push({ w: w, pts: pts, bbox: bb })
-            for (var k = 0; k < locals.length; ++k) {
-                var a = locals[k]
-                var b = locals[Math.min(k + 1, locals.length - 1)]
-                var de = b.x - a.x, dn = b.y - a.y
-                var hdg = (de === 0 && dn === 0) ? gps.headingDeg
-                                                 : Math.atan2(de, dn) * 180 / Math.PI
-                marks.push({ x: a.x, y: a.y, hdg: hdg, w: w })
-            }
+            for (var k = 0; k < locals.length; ++k)
+                marks.push({ x: locals[k].x, y: locals[k].y, hdg: pts[k].h, w: w })
         }
         if (done.length < 1 && marks.length < 1) {
             recorder.loadingCoverage = false

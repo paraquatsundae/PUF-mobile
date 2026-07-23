@@ -60,6 +60,9 @@
         <file>BoundaryRecordPage.qml</file>
         <file>BoundaryGpsBridge.qml</file>
         <file>CoverageRecorder.qml</file>
+        <file>MapsSetupPage.qml</file>
+        <file>BasemapPromptDialog.qml</file>
+        <file>PhoneMapsScreen.qml</file>
         <file>assets/farm/README.md</file>
         <file>assets/farm/TASKDATA.EMPTY.xml</file>
     </qresource>

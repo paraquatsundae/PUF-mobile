@@ -61,6 +61,9 @@
         <file alias="BoundaryRecordPage.qml">BoundaryRecordPage.qml</file>
         <file alias="BoundaryGpsBridge.qml">BoundaryGpsBridge.qml</file>
         <file alias="CoverageRecorder.qml">CoverageRecorder.qml</file>
+        <file alias="MapsSetupPage.qml">MapsSetupPage.qml</file>
+        <file alias="BasemapPromptDialog.qml">BasemapPromptDialog.qml</file>
+        <file alias="PhoneMapsScreen.qml">PhoneMapsScreen.qml</file>
         <file alias="assets/farm/README.md">assets/farm/README.md</file>
         <file alias="assets/farm/TASKDATA.EMPTY.xml">assets/farm/TASKDATA.EMPTY.xml</file>
     </qresource>

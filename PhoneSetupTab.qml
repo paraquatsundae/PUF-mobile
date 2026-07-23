@@ -8,6 +8,7 @@ Item {
     signal openPaddock()
     signal openGps()
     signal openBoundary()
+    signal openMaps()
     signal openGuide()
 
     ColumnLayout {
@@ -127,6 +128,29 @@ Item {
                 enabled: farm.hasActiveField
                 onClicked: setupTab.openBoundary()
             }
+        }
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.leftMargin: 12
+            Layout.rightMargin: 12
+            implicitHeight: 56
+            radius: 8
+            color: theme.panel
+            RowLayout {
+                anchors.fill: parent
+                anchors.margins: 12
+                Text { text: qsTr("Offline maps"); color: theme.text; font.pixelSize: 16 }
+                Item { Layout.fillWidth: true }
+                Text {
+                    text: basemap.packs.length
+                          ? (basemap.packs.length + qsTr(" pack(s)"))
+                          : qsTr("none")
+                    color: theme.accent
+                    font.pixelSize: 16
+                }
+                Text { text: ">"; color: theme.textDim; font.pixelSize: 18 }
+            }
+            MouseArea { anchors.fill: parent; onClicked: setupTab.openMaps() }
         }
         Rectangle {
             Layout.fillWidth: true

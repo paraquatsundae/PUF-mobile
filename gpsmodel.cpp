@@ -455,21 +455,28 @@ bool GpsModel::parsePANDA(const QStringList &f)
     m_alt = f.at(9).toDouble();
     if (f.size() > 11 && !f.at(11).isEmpty())
         m_speedKmh = f.at(11).toDouble(); // AgOpenGPS PANDA speed (km/h)
-    if (f.size() > 12 && !f.at(12).isEmpty()) {
-        m_heading = f.at(12).toDouble();
-        // JD StarFire TCM yaw (FEE8) via the Wi‑Fi / USB bridge — treat as true
-        // heading so the boom does not sway with track-derived COG noise.
-        m_haveTrueHeading = true;
-    }
     // TCM attitude fields (roll/pitch/yaw) — parsed for the GPS info page.
     // Terrain-comp into coverage is PARKED in RecordPoint.js (FEE6 roll bogus;
     // FEE8 pitch has a large constant bias). hasAttitude stays false so coverage
-    // never pitch-only-shifts. Heading above still uses m_haveTrueHeading.
+    // never pitch-only-shifts.
     if (f.size() > 13 && !f.at(13).isEmpty())
         m_roll = f.at(13).toDouble();
     if (f.size() > 14 && !f.at(14).isEmpty())
         m_pitch = f.at(14).toDouble();
     if (f.size() > 15 && !f.at(15).isEmpty())
         m_yawRate = f.at(15).toDouble();
+    if (f.size() > 12 && !f.at(12).isEmpty()) {
+        m_heading = f.at(12).toDouble();
+        // True heading ONLY when TCM attitude accompanies the sentence (JD
+        // StarFire FEE8 via the bridge). Tablet GPS also emits $PANDA with
+        // Android Location.bearing but no roll/pitch — that bearing is often
+        // stale/wrong when slow and must NOT lock haveTrueHeading (filter then
+        // skips track-derived heading → wild boom swings).
+        const bool hasTcm = (f.size() > 13 && !f.at(13).isEmpty())
+                         || (f.size() > 14 && !f.at(14).isEmpty())
+                         || (f.size() > 15 && !f.at(15).isEmpty());
+        // Clear as well as set — switching JD → tablet must drop the lock.
+        m_haveTrueHeading = hasTcm;
+    }
     return true;
 }

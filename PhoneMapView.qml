@@ -1,5 +1,6 @@
 import QtQuick 2.15
 import QtQuick.Window 2.15
+import QtQuick.Controls 2.15
 import QtQuick.Shapes 1.15
 import "Style.js" as Style
 import "FormFactor.js" as FormFactor
@@ -12,6 +13,22 @@ Item {
 
     property var recorder: null
     property int mode: 0
+
+    Dialog {
+        id: stopRecordDialog
+        modal: true
+        title: qsTr("Stop recording?")
+        standardButtons: Dialog.Yes | Dialog.No
+        anchors.centerIn: parent
+        width: Math.min(360, parent.width - 40)
+        onAccepted: app.setRecording(false)
+        Label {
+            text: qsTr("Coverage recording will stop.")
+            wrapMode: Text.WordWrap
+            width: stopRecordDialog.availableWidth
+            color: theme.text
+        }
+    }
     // Set by PhoneMapTab so chase framing clears the floating header.
     property int topChromeInset: 0
     property int bottomChromeInset: 0
@@ -20,6 +37,8 @@ Item {
     readonly property bool fitField: mode === 2 && gps.hasOrigin
     readonly property bool headingUp: mode === 0
     property real userZoom: 1.0
+    // Five zoom-in taps (phone uses ×1.25 per click).
+    readonly property real _chaseDefaultZoom: Math.pow(1.25, 5)
     property bool following: true
     property real panX: 0
     property real panY: 0
@@ -61,7 +80,10 @@ Item {
     Behavior on tilt {
         NumberAnimation { duration: 350; easing.type: Easing.InOutQuad }
     }
-    onModeChanged: { userZoom = 1.0; panX = 0; panY = 0; following = true }
+    onModeChanged: {
+        userZoom = chaseView ? _chaseDefaultZoom : 1.0
+        panX = 0; panY = 0; following = true
+    }
 
     function _validLatLon(la, lo) {
         return (typeof la === "number" && typeof lo === "number"
@@ -216,7 +238,7 @@ Item {
     }
     // S911B Mali: thick Shape strokeWidth (boom m) is invisible; use rect swaths.
     property bool preferRectSwaths: true
-    // Always paint cells (area source); swaths overlay when stroke pts exist.
+    // Cell spans only as fallback / paddock overview (axis-aligned = chunky up close).
     property bool preferCellPaint: true
     readonly property real _minCellScreenPx: 8.0
     readonly property int _cellPaintMax: map.fitField ? 2500 : (map.chaseView ? 1500 : 2000)
@@ -242,68 +264,93 @@ Item {
         }
         return out
     }
-    // Frozen swaths — cull by stroke bbox (chunk index != doneStrokes index when ck>done).
+    // Frozen swaths — viewport-culled indices with fair per-chunk budget.
     readonly property var _frozenPaintSegs: {
         if (!map.recorder || map.recorder.doneCount < 1)
             return []
+        var idxs = map._visChunks
         var _dep = [
             map._paintTick, map.recorder.doneCount,
-            map._covMinX, map._covMinY, map._covMaxX, map._covMaxY
+            map._covMinX, map._covMinY, map._covMaxX, map._covMaxY,
+            idxs ? idxs.length : 0
         ].join("|")
         var out = []
-        var maxSeg = 1800
-        var qminx = map._covMinX, qminy = map._covMinY
-        var qmaxx = map._covMaxX, qmaxy = map._covMaxY
-        for (var i = 0; i < map.recorder.doneCount && out.length < maxSeg; ++i) {
-            var st = map.recorder.doneStrokes[i]
-            if (!st || !st.pts || st.pts.length < 2)
-                continue
-            if (st.bbox) {
-                var b = st.bbox
-                if (b.maxx < qminx || b.minx > qmaxx || b.maxy < qminy || b.miny > qmaxy)
-                    continue
-            }
-            map._appendWorldStrokeSegs(st, out, maxSeg)
+        if (!idxs || !idxs.length)
+            return out
+        var n = Math.max(1, idxs.length)
+        var per = Math.max(50, Math.floor(1800 / n))
+        for (var i = 0; i < idxs.length; ++i) {
+            var st = map.recorder.doneStrokes[idxs[i]]
+            if (st)
+                map._appendWorldStrokeSegs(st, out, per)
         }
         return out
     }
     readonly property var _coveragePaintSegs: {
         var _dep = [map._paintTick, map.recorder ? map.recorder.activeVersion : 0].join("|")
         var out = []
-        var maxSeg = 2000
         var frz = map._frozenPaintSegs
-        for (var i = 0; i < frz.length && out.length < maxSeg; ++i)
+        for (var i = 0; i < frz.length; ++i)
             out.push(frz[i])
         var strokes = map._strokesForActivePaint()
-        for (var j = 0; j < strokes.length && out.length < maxSeg; ++j)
-            map._appendWorldStrokeSegs(strokes[j], out, maxSeg)
+        var n = Math.max(1, strokes.length)
+        var per = Math.max(40, Math.floor(900 / n))
+        for (var j = 0; j < strokes.length; ++j)
+            map._appendWorldStrokeSegs(strokes[j], out, per)
         return out
     }
-    function _appendWorldStrokeSegs(st, out, maxN) {
-        if (!st || !st.pts || st.pts.length < 1 || out.length >= maxN)
+    function _hdgDelta(a, b) {
+        var d = b - a
+        while (d > 180) d -= 360
+        while (d < -180) d += 360
+        return d
+    }
+    function _ptHdg(p, fallback) {
+        if (p && typeof p.h === "number" && isFinite(p.h))
+            return p.h
+        return fallback
+    }
+    // One square boom-bar per sample (matched to FieldView) — no tip subdiv.
+    function _appendWorldStrokeSegs(st, out, budgetN) {
+        if (!st || !st.pts || st.pts.length < 2 || budgetN < 1)
             return
         var halfW = Math.max(0.25, (st.w || app.implementWidth) * 0.5)
+        var band = halfW * 2
+        var overlap = 0.18
         var pts = st.pts
-        // Path-aligned ribbons first (point stamps used to starve the budget).
-        for (var k = 0; k < pts.length - 1; ++k) {
-            if (out.length >= maxN)
-                break
-            var p0 = pts[k], p1 = pts[k + 1]
+        var startLen = out.length
+        var limit = startLen + budgetN
+        var stride = 1
+        if (pts.length > 120)
+            stride = 2
+        if (pts.length > 240)
+            stride = 3
+        for (var k = 0; k < pts.length - 1; k += stride) {
+            if (out.length >= limit)
+                return
+            var p0 = pts[k]
+            var p1 = pts[Math.min(k + stride, pts.length - 1)]
             var dx = p1.x - p0.x, dy = p1.y - p0.y
-            var len = Math.sqrt(dx * dx + dy * dy)
-            if (len < 0.02)
+            var chord = Math.sqrt(dx * dx + dy * dy)
+            if (chord < 0.02)
                 continue
+            var fall = Math.atan2(dx, -dy) * 180 / Math.PI
+            if (fall < 0) fall += 360
+            var hm = map._ptHdg(p0, fall)
+            var h1 = map._ptHdg(p1, fall)
+            hm = hm + map._hdgDelta(hm, h1) * 0.5
+            var hr = hm * Math.PI / 180
+            var fx = Math.sin(hr), fy = -Math.cos(hr)
+            var along = dx * fx + dy * fy
+            if (Math.abs(along) < 0.04)
+                along = chord
             out.push({
                 x: (p0.x + p1.x) * 0.5,
                 y: (p0.y + p1.y) * 0.5,
-                w: len + halfW * 2,
-                h: halfW * 2,
-                rot: Math.atan2(dy, dx) * 180 / Math.PI
+                w: Math.abs(along) + overlap * 2,
+                h: band,
+                rot: Math.atan2(fy, fx) * 180 / Math.PI
             })
-        }
-        if (pts.length === 1 && out.length < maxN) {
-            var p = pts[0]
-            out.push({ x: p.x, y: p.y, w: halfW * 2, h: halfW * 2, rot: 0 })
         }
     }
     function _chunkSegs(st, maxN) {
@@ -324,7 +371,10 @@ Item {
     }
     function zoomIn()  { userZoom = Math.min(80.0, userZoom * 1.25) }
     function zoomOut() { userZoom = Math.max(0.03, userZoom / 1.25) }
-    function recenter() { userZoom = 1.0; panX = 0; panY = 0; following = true }
+    function recenter() {
+        userZoom = chaseView ? _chaseDefaultZoom : 1.0
+        panX = 0; panY = 0; following = true
+    }
 
     function _mapRing(list, close) {
         if (!list) return []
@@ -383,9 +433,141 @@ Item {
         var half = Math.ceil(map._viewHalfSpanM * 1.35 / map._gridStep) * map._gridStep + map._gridStep
         return Math.max(120, half)
     }
+    // World-lattice snap (same as FieldView) — grid stays on the paddock, not the tractor.
+    readonly property real _gridStartX: Math.floor(
+        (map._covCenter.x - map._gridHalf) / map._gridStep) * map._gridStep
+    readonly property real _gridStartY: Math.floor(
+        (map._covCenter.y - map._gridHalf) / map._gridStep) * map._gridStep
     // Cap grid repeaters — uncapped lines × pan/zoom updates can abort hwuiTask on Mali.
     readonly property int _gridLines: Math.min(100,
-        Math.floor(map._gridHalf * 2 / map._gridStep) + 1)
+        Math.floor(map._gridHalf * 2 / map._gridStep) + 2)
+    readonly property real _satQuantDeg: 0.0008
+    readonly property real _satChaseAheadM: 2200
+    readonly property real _satChaseSideM: 450
+    readonly property real _satNearAheadM: 320
+
+    function _satGeoFromSamples(samples, mpp) {
+        var south = 90, north = -90, west = 180, east = -180
+        var any = false
+        for (var i = 0; i < samples.length; ++i) {
+            var p = samples[i]
+            var g = gps.toGeo(p.e, p.n)
+            if (!g || !isFinite(g.lat) || !isFinite(g.lon))
+                continue
+            any = true
+            south = Math.min(south, g.lat)
+            north = Math.max(north, g.lat)
+            west = Math.min(west, g.lon)
+            east = Math.max(east, g.lon)
+        }
+        if (!any)
+            return null
+        var q = map._satQuantDeg
+        return {
+            south: Math.floor(south / q) * q,
+            west: Math.floor(west / q) * q,
+            north: Math.ceil(north / q) * q,
+            east: Math.ceil(east / q) * q,
+            mpp: mpp
+        }
+    }
+
+    function _satChaseSamples(aheadM, sideM) {
+        var hdg = gps.headingDeg * Math.PI / 180
+        var fx = Math.sin(hdg), fy = Math.cos(hdg)
+        var sx = Math.cos(hdg), sy = -Math.sin(hdg)
+        var ox, oy
+        if (map.following) {
+            ox = gps.localX; oy = gps.localY
+        } else {
+            var c0 = map._screenToWorld(width * 0.5, height * 0.5)
+            ox = c0.e; oy = c0.n
+        }
+        var samples = []
+        var fracs = [0, 0.15, 0.3, 0.45, 0.6, 0.75, 0.9, 1.0]
+        for (var fi = 0; fi < fracs.length; ++fi) {
+            var d = aheadM * fracs[fi]
+            var bx = ox + fx * d
+            var by = oy + fy * d
+            var side = sideM * (0.35 + 0.65 * fracs[fi])
+            samples.push({ e: bx, n: by })
+            samples.push({ e: bx + sx * side, n: by + sy * side })
+            samples.push({ e: bx - sx * side, n: by - sy * side })
+        }
+        samples.push({ e: ox - fx * Math.min(120, sideM * 0.4),
+                       n: oy - fy * Math.min(120, sideM * 0.4) })
+        return samples
+    }
+
+    function _satMergeTiles(baseList, detailList) {
+        var seen = ({})
+        var out = []
+        function add(list) {
+            if (!list)
+                return
+            for (var i = 0; i < list.length; ++i) {
+                var t = list[i]
+                var k = t.path || (t.z + "/" + t.x + "/" + t.y)
+                if (seen[k])
+                    continue
+                seen[k] = 1
+                out.push(t)
+            }
+        }
+        add(baseList)
+        add(detailList)
+        return out
+    }
+
+    readonly property var _satViewGeo: {
+        if (!gps.hasOrigin || width < 8 || height < 8)
+            return null
+        var dpr = Math.max(1.0, Screen.devicePixelRatio)
+        var mpp = ((1.0 / Math.max(0.02, map.viewScale)) / dpr) * 0.28
+        if (map.chaseView)
+            return map._satGeoFromSamples(
+                        map._satChaseSamples(map._satNearAheadM,
+                                             Math.max(120, map._viewHalfSpanM * 0.9)),
+                        mpp)
+        var samples = [
+            map._screenToWorld(0, 0),
+            map._screenToWorld(width, 0),
+            map._screenToWorld(0, height),
+            map._screenToWorld(width, height),
+            map._screenToWorld(width * 0.5, height * 0.5)
+        ]
+        return map._satGeoFromSamples(samples, mpp)
+    }
+    readonly property var _satFarGeo: {
+        if (!gps.hasOrigin || !map.chaseView || width < 8)
+            return null
+        var dpr = Math.max(1.0, Screen.devicePixelRatio)
+        var mpp = ((1.0 / Math.max(0.02, map.viewScale)) / dpr) * 6.0
+        return map._satGeoFromSamples(
+                    map._satChaseSamples(map._satChaseAheadM, map._satChaseSideM),
+                    mpp)
+    }
+    readonly property var _satTiles: {
+        var rev = basemap.packRevision
+        var packsN = basemap.packs.length
+        var g = map._satViewGeo
+        if (!gps.hasOrigin || packsN < 1 || !g)
+            return []
+        var _dep = [rev, packsN, g.south, g.west, g.north, g.east,
+                    Math.round(Math.log(Math.max(0.02, map.viewScale)) * 8),
+                    map.chaseView ? 1 : 0].join("|")
+        var detailCap = map.fitField ? 100 : (map.chaseView ? 200 : 160)
+        var detail = basemap.visibleTiles(g.south, g.west, g.north, g.east,
+                                          g.mpp, detailCap)
+        if (!map.chaseView)
+            return detail
+        var far = map._satFarGeo
+        if (!far)
+            return detail
+        var base = basemap.visibleTiles(far.south, far.west, far.north, far.east,
+                                        far.mpp, 90)
+        return map._satMergeTiles(base, detail)
+    }
     readonly property var _covCenter: {
         if (map.fitField && map.fb)
             return { x: (map.fb.minx + map.fb.maxx) / 2,
@@ -434,7 +616,7 @@ Item {
         var act = map.recorder.activeStrokes
         for (var i = 0; i < act.length; ++i) {
             var st = act[i]
-            if (st && st.pts && st.pts.length >= 1)
+            if (st && st.pts && st.pts.length >= 2)
                 out.push(st)
         }
         return out
@@ -443,9 +625,10 @@ Item {
         var strokes = map._strokesForActivePaint()
         var _dep = [map._paintVersion, strokes.length, map._paintTick].join("|")
         var out = []
-        var maxSeg = 400
-        for (var i = 0; i < strokes.length && out.length < maxSeg; ++i)
-            map._appendWorldStrokeSegs(strokes[i], out, maxSeg)
+        var n = Math.max(1, strokes.length)
+        var per = Math.max(40, Math.floor(900 / n))
+        for (var i = 0; i < strokes.length; ++i)
+            map._appendWorldStrokeSegs(strokes[i], out, per)
         return out
     }
     // Implement recording point (behind tractor) for position marker on phone.
@@ -481,10 +664,14 @@ Item {
                + " live:" + map._activePaintSegs.length
                + " mode:" + map.mode
     }
-    Component.onCompleted: map._ensureOrigin()
+    Component.onCompleted: {
+        if (map.chaseView)
+            map.userZoom = map._chaseDefaultZoom
+        map._ensureOrigin()
+    }
     Timer {
         id: paintCoalesce
-        interval: 100
+        interval: 180
         repeat: false
         onTriggered: {
             map._paintVersion = map.recorder ? map.recorder.activeVersion : 0
@@ -523,10 +710,10 @@ Item {
         function onFixChanged() { map._healOriginIfGpsFarFromPaddock() }
     }
 
-    // Full-bleed ground so chase tilt never exposes theme.bg black strips.
+    // Full-bleed grey ground — never fall back to theme.bg (reads as flat black).
     Rectangle {
         anchors.fill: parent
-        color: map.chaseView || map.mode === 1 || map.fitField ? Style.ground : theme.bg
+        color: Style.ground
     }
 
     // Static ground fill below the horizon so chase tilt never exposes theme.bg.
@@ -569,7 +756,9 @@ Item {
                     ? Math.max(map._gridHalf,
                                Math.max(map.fb.maxx - map.fb.minx,
                                         map.fb.maxy - map.fb.miny) * 0.65 + 40)
-                    : map._gridHalf * 2.5
+                    : (map.chaseView
+                       ? Math.max(map._gridHalf * 2.5, map._satChaseAheadM * 1.05)
+                       : map._gridHalf * 2.5)
 
             Rectangle {
                 x: worldLayer._groundCx - worldLayer._groundHalf
@@ -592,39 +781,49 @@ Item {
                 visible: !map.chaseView && map.mode !== 1 && !map.fitField
             }
             Repeater {
-                model: map._gridLines
-                Rectangle {
-                    x: worldLayer._groundCx - map._gridHalf + index * map._gridStep - 0.125
-                    y: worldLayer._groundCy - map._gridHalf
-                    width: 0.25; height: map._gridHalf * 2
-                    color: Style.gridMinor; opacity: 0.55
+                model: map._satTiles
+                Image {
+                    asynchronous: true
+                    cache: true
+                    smooth: true
+                    mipmap: true
+                    fillMode: Image.Stretch
+                    source: modelData.path
+                    sourceSize.width: 256
+                    sourceSize.height: 256
+                    readonly property var _nw: gps.toLocal(modelData.north, modelData.west)
+                    readonly property var _se: gps.toLocal(modelData.south, modelData.east)
+                    x: _nw.x
+                    y: -_nw.y
+                    width: Math.max(0.5, _se.x - _nw.x)
+                    height: Math.max(0.5, _nw.y - _se.y)
+                    opacity: 1.0
                 }
             }
             Repeater {
                 model: map._gridLines
                 Rectangle {
-                    x: worldLayer._groundCx - map._gridHalf
-                    y: worldLayer._groundCy - map._gridHalf + index * map._gridStep - 0.125
-                    width: map._gridHalf * 2; height: 0.25
-                    color: Style.gridMinor; opacity: 0.55
+                    x: map._gridStartX + index * map._gridStep - 0.125
+                    y: map._gridStartY
+                    width: 0.25; height: map._gridHalf * 2 + map._gridStep
+                    color: Style.gridMinor; opacity: map._satTiles.length ? 0.18 : 0.35
                 }
             }
-            Rectangle {
-                x: worldLayer._groundCx - 0.3
-                y: worldLayer._groundCy - map._gridHalf
-                width: 0.6; height: map._gridHalf * 2
-                color: Style.gridMajor
-            }
-            Rectangle {
-                x: worldLayer._groundCx - map._gridHalf
-                y: worldLayer._groundCy - 0.3
-                width: map._gridHalf * 2; height: 0.6
-                color: Style.gridMajor
+            Repeater {
+                model: map._gridLines
+                Rectangle {
+                    x: map._gridStartX
+                    y: map._gridStartY + index * map._gridStep - 0.125
+                    width: map._gridHalf * 2 + map._gridStep; height: 0.25
+                    color: Style.gridMinor; opacity: map._satTiles.length ? 0.18 : 0.35
+                }
             }
 
-            // Cell grid — always on when cells exist (guaranteed fill).
+            // Cell spans only when swaths empty or paddock overview (avoids stair-steps).
             Repeater {
-                model: map.preferCellPaint ? map._visCellPaint : []
+                model: (map.preferCellPaint
+                        && (map.fitField || map._coveragePaintSegs.length < 1))
+                       ? map._visCellPaint : []
                 Rectangle {
                     x: modelData.x - 0.05
                     y: modelData.y - 0.05
@@ -634,7 +833,7 @@ Item {
                 }
             }
 
-            // Boom-width swaths on top when stroke geometry is available.
+            // Boom-width square bars — solid painted strip (no stadium circles).
             Repeater {
                 model: map.preferRectSwaths ? map._coveragePaintSegs : []
                 Item {
@@ -646,7 +845,7 @@ Item {
                     transformOrigin: Item.Center
                     Rectangle {
                         anchors.fill: parent
-                        radius: Math.min(width, height) * 0.45
+                        radius: 0
                         color: "#883ddc84"
                     }
                 }
@@ -915,7 +1114,12 @@ Item {
             }
             MouseArea {
                 anchors.fill: parent
-                onClicked: app.toggleRecording()
+                onClicked: {
+                    if (app.recordingCoverage)
+                        map.stopRecordDialog.open()
+                    else
+                        app.setRecording(true)
+                }
             }
         }
     }

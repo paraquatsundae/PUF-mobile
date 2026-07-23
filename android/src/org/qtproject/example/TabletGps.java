@@ -91,8 +91,13 @@ public class TabletGps {
         double lat = loc.getLatitude();
         double lon = loc.getLongitude();
         String alt = loc.hasAltitude() ? String.valueOf(loc.getAltitude()) : "";
-        String spd = loc.hasSpeed() ? String.valueOf(loc.getSpeed() * 3.6) : ""; // m/s -> km/h
-        String brg = loc.hasBearing() ? String.valueOf(loc.getBearing()) : "";
+        double speedMs = loc.hasSpeed() ? loc.getSpeed() : 0.0;
+        String spd = loc.hasSpeed() ? String.valueOf(speedMs * 3.6) : ""; // m/s -> km/h
+        // Android bearing is often stale/wrong below ~2 m/s — omit it so the
+        // native filter derives heading from the smoothed track instead.
+        String brg = "";
+        if (loc.hasBearing() && speedMs >= 2.0f)
+            brg = String.valueOf(loc.getBearing());
         String sats = "";
         try {
             Bundle ex = loc.getExtras();
