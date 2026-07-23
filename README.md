@@ -344,6 +344,7 @@ Close the running app on the tablet before reinstalling. After adding/removing Q
 
 ## Related docs
 
+- Contributing / PR workflow: [`CONTRIBUTING.md`](CONTRIBUTING.md) (PRs into `main`)
 - PUFworks workspace overview: `C:\Projects\AGENTS.md`
 - ISOBUS / JD decisions: `PUFworks-isobus/JD_ISOBUS_MAP.md`
 - Mobile dev notes: `DEV_NOTES.md`
