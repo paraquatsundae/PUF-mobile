@@ -12,7 +12,10 @@
 
 Field-ready GPS guidance for Android tablets and phones, built for the **PUFworks**
 spot-spraying program. Qt 5.15 LTS, heading-up map, coverage recording, farm/paddock
-setup, and John Deere StarFire / 616R position via a UDP NMEA bridge.
+setup, and StarFire / 616R position via a UDP NMEA bridge.
+
+Not a John Deere, Goldacres, or AEF product. ISOBUS in the wider stack means
+ISO 11783 / J1939 tooling — workshop software, not AEF-certified.
 
 Target hardware is a small **cab tablet fleet**:
 
@@ -51,7 +54,7 @@ and split across dedicated repos:
 | Repo | Role |
 |---|---|
 | `PUFworks-vision` | Camera → Green-on-Brown → `SectionBitmapV1` |
-| `PUFworks-isobus` | CAN/ISOBUS bus engine, GreenSeeker, safety ladder |
+| `PUFworks-isobus` | ISO 11783 / J1939 bus engine, GreenSeeker, safety ladder |
 | `PUFworks-contracts` | IPC schemas (`SectionBitmapV1`, telemetry, etc.) |
 | `PUFworks-shell` | Cab integrator (vision + isobus sidecars) |
 | `PUF-mobile` | Android tablet/phone GPS guidance (this repo) |
@@ -59,8 +62,10 @@ and split across dedicated repos:
 
 Live sprayer work is **Green-on-Brown only**; agronomy/GoG labelling is offline.
 616R = GreenSeeker serial + whole-boom blanking (no CAN section injection).
-Goldacres GRC = DDI 141 sections. Boot ISOBUS in `OBSERVE`; never bypass the
-Control Authority ladder.
+GRC-class DDI 141 sections are a workshop target path — experimental and
+machine-specific, not a certified multi-brand guarantee. Boot the bus engine
+in `OBSERVE`; never bypass the Control Authority ladder. Not affiliated with
+AEF, John Deere, or Goldacres.
 
 This repo is Windows-first, local workshop builds — no auto-updater, no public
 distribution pipeline.
@@ -84,7 +89,7 @@ distribution pipeline.
 
 | Source | When to use |
 |---|---|
-| **UDP port 9999** | **Recommended for John Deere.** Run standalone
+| **UDP port 9999** | **Usual cab path for a StarFire / 616R NMEA bridge.** Run standalone
   `dist\run_gps_bridge.bat` (or `bridge_to_tablet.ps1`) on a laptop with the
   CANable; tablet listens on UDP 9999. |
 | **Internal serial** | Tablet built-in GNSS on `/dev/ttyS0` @ 115200 (e.g. BT-770 antenna). |
@@ -92,7 +97,7 @@ distribution pipeline.
 | **Tablet GPS** | Android location services (no TCM attitude). |
 | **USB-CAN** | On-tablet CANable — blocked on some tablets by OTG power limits; prefer UDP. |
 
-John Deere path (recommended):
+StarFire / 616R bridge path (usual cab setup):
 
 ```
 CANable (slcan) → gps_bridge.exe on laptop → UDP NMEA → tablet :9999
@@ -302,7 +307,7 @@ Close the running app on the tablet before reinstalling. After adding/removing Q
 
 - Contributing / PR workflow: [`CONTRIBUTING.md`](CONTRIBUTING.md) (PRs into `main`)
 - PUFworks workspace overview: `C:\Projects\AGENTS.md`
-- ISOBUS / JD decisions: `PUFworks-isobus/JD_ISOBUS_MAP.md`
+- ISO 11783 / J1939 workshop map: `PUFworks-isobus/JD_ISOBUS_MAP.md`
 - Mobile dev notes: `DEV_NOTES.md`
 
 ---
